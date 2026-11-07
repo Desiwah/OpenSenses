@@ -121,24 +121,56 @@ impl Daemon {
     }
 }
 
+fn adopt_current(hw: &mut Option<Box<dyn Backend>>) -> Settings {
+    let mut s = Settings::default();
+    let Some(hw) = hw.as_mut() else { return s };
+    let seen = hw.observe();
+    if let Some(z) = seen.zones {
+        s.lighting.effect = Effect::Static;
+        s.lighting.zones = z;
+        s.lighting.zone_on = z.map(|c| c != Rgb::default());
+        s.lighting.zones = z.map(|c| if c == Rgb::default() { s.lighting.colour } else { c });
+    }
+    if let (Some(cpu), Some(gpu)) = seen.fans {
+        if cpu == gpu {
+            s.fans.mode = cpu;
+        }
+    }
+    if let Some(g) = seen.gpu {
+        s.gpu = g;
+    }
+    s
+}
+
 pub fn run(jobs: Receiver<Job>) {
-    let (hw, open_error) = match backend::open() {
+    let (mut hw, open_error) = match backend::open() {
         Ok(h) => (Some(h), None),
         Err(e) => {
             log::error!("opening hardware: {e:#}");
             (None, Some(format!("{e:#}")))
         }
     };
+    // First run: start from whatever the laptop is set to now instead of
+    // repainting it with defaults the user never picked.
+    let (initial, first_run) = match settings::load() {
+        Some(s) => (s, false),
+        None => (adopt_current(&mut hw), true),
+    };
+    if first_run {
+        if let Err(e) = settings::save(&initial) {
+            log::error!("saving settings: {e:#}");
+        }
+    }
     let mut d = Daemon {
         hw,
         open_error,
-        settings: settings::load(),
+        settings: initial,
         sensors: Sensors::default(),
         errors: Vec::new(),
         guard: false,
         temp_colour: None,
     };
-    if d.settings.keep_applied {
+    if d.settings.keep_applied && !first_run {
         d.apply();
     }
 

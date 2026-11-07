@@ -134,12 +134,12 @@ pub fn settings_path() -> PathBuf {
     }
 }
 
-pub fn load() -> Settings {
+/// Saved settings, or None on first run (no file yet).
+pub fn load() -> Option<Settings> {
     std::fs::read_to_string(settings_path())
         .ok()
         .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
-        .unwrap_or_default()
-        .sanitized()
+        .map(Settings::sanitized)
 }
 
 pub fn save(s: &Settings) -> anyhow::Result<()> {
