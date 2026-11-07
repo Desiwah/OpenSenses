@@ -5,7 +5,7 @@
 //! unsupported instead of guessed.
 
 use super::{Backend, Capabilities, Observed, Sensors};
-use crate::settings::{FanMode, GpuMode, Rgb};
+use crate::settings::{FanMode, GpuMode, Rgb, Toggle};
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::Write;
@@ -66,6 +66,7 @@ impl Backend for LinuxBackend {
             fans: false,
             gpu_modes: false,
             sensors: self.hwmon_acer.is_some() || self.hwmon_cpu.is_some(),
+            toggles: false,
         }
     }
 
@@ -105,6 +106,10 @@ impl Backend for LinuxBackend {
 
     fn set_turbo_led(&mut self, _on: bool) -> Result<()> {
         Ok(())
+    }
+
+    fn set_toggle(&mut self, _t: Toggle, _on: bool) -> Result<()> {
+        bail!("these settings are not available on Linux yet")
     }
 
     fn observe(&mut self) -> Observed {

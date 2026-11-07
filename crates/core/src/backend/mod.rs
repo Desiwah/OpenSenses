@@ -1,4 +1,4 @@
-use crate::settings::{FanMode, GpuMode, Rgb};
+use crate::settings::{FanMode, GpuMode, Rgb, Toggle, Toggles};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,7 @@ pub struct Capabilities {
     pub fans: bool,
     pub gpu_modes: bool,
     pub sensors: bool,
+    pub toggles: bool,
 }
 
 /// What the firmware reports right now, used to notice when something
@@ -35,6 +36,8 @@ pub struct Observed {
     pub gpu: Option<GpuMode>,
     /// P0 graphics clock offset in MHz, when the GPU driver can be read.
     pub gpu_core_offset: Option<i32>,
+    /// Current state of each toggle, where the firmware reports it.
+    pub toggles: Toggles,
 }
 
 pub trait Backend {
@@ -48,7 +51,12 @@ pub trait Backend {
     fn set_fan_speed(&mut self, fan: u64, percent: u8) -> Result<()>;
     fn set_gpu(&mut self, mode: GpuMode) -> Result<()>;
     fn set_turbo_led(&mut self, on: bool) -> Result<()>;
+    fn set_toggle(&mut self, t: Toggle, on: bool) -> Result<()>;
     fn observe(&mut self) -> Observed;
+    /// Raw readings for troubleshooting (`opensenses-service status`).
+    fn diagnostics(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Opens the hardware backend for this OS.
