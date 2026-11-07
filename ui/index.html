@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenSenses</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <nav class="rail" aria-label="Sections">
+      <div class="brand" aria-hidden="true">
+        <span style="--c:#00aec7"></span><span style="--c:#4678ff"></span><span style="--c:#be46ff"></span><span style="--c:#ff4678"></span>
+      </div>
+      <button class="tab" data-page="lighting" aria-current="page">Lighting</button>
+      <button class="tab" data-page="fans">Fans</button>
+      <button class="tab" data-page="gpu">GPU</button>
+      <button class="tab" data-page="monitor">Monitor</button>
+      <div class="rail-temps" id="railTemps" aria-live="polite"></div>
+    </nav>
+
+    <main>
+      <!-- Lighting -->
+      <section class="page" id="page-lighting">
+        <div class="stage">
+          <svg id="keyboard" viewBox="0 0 1000 330" role="img" aria-label="Keyboard preview"></svg>
+          <div class="zone-pills" id="zonePills"></div>
+        </div>
+
+        <div class="controls">
+          <div class="field">
+            <h2>Effect</h2>
+            <div class="seg" id="effects" role="radiogroup" aria-label="Effect"></div>
+            <p class="hint" id="effectHint"></p>
+          </div>
+
+          <div class="field" id="colourField">
+            <h2 id="colourTitle">Zone colour</h2>
+            <div class="swatches" id="swatches"></div>
+          </div>
+
+          <div class="row">
+            <div class="field" id="speedField">
+              <h2>Speed</h2>
+              <input type="range" id="speed" min="1" max="9" step="1" aria-label="Speed">
+              <div class="scale"><span>Slow</span><span>Fast</span></div>
+            </div>
+            <div class="field">
+              <h2>Brightness</h2>
+              <div class="seg small" id="brightness" role="radiogroup" aria-label="Brightness"></div>
+            </div>
+            <div class="field" id="directionField">
+              <h2>Direction</h2>
+              <div class="seg small" id="direction" role="radiogroup" aria-label="Direction"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Fans -->
+      <section class="page" id="page-fans" hidden>
+        <header class="page-head">
+          <h1>Fans</h1>
+          <p>Auto lets the laptop decide. Max runs both fans flat out. Custom holds each fan at the speed you set.</p>
+        </header>
+        <div class="seg big" id="fanModes" role="radiogroup" aria-label="Fan mode"></div>
+        <div class="fans" id="fanCards"></div>
+        <p class="hint" id="guardNote" hidden>Fans were switched to Max because the laptop got too hot. Your custom speeds come back once both chips are below 80 °C.</p>
+      </section>
+
+      <!-- GPU -->
+      <section class="page" id="page-gpu" hidden>
+        <header class="page-head">
+          <h1>GPU overclock</h1>
+          <p>The same three levels PredatorSense offered for the RTX 2070 Max-Q. NVIDIA's driver forgets overclocks on restart, so with “Keep settings applied” on, OpenSenses sets your level again each time.</p>
+        </header>
+        <div class="levels" id="gpuLevels" role="radiogroup" aria-label="GPU level"></div>
+      </section>
+
+      <!-- Monitor -->
+      <section class="page" id="page-monitor" hidden>
+        <header class="page-head">
+          <h1>Monitor</h1>
+          <p>Read straight from the laptop's firmware every two seconds.</p>
+        </header>
+        <div class="gauges" id="gauges"></div>
+      </section>
+    </main>
+  </div>
+
+  <footer class="status" id="status">
+    <label class="switch">
+      <input type="checkbox" id="keepApplied">
+      <span>Keep settings applied after restarts, sleep and Windows updates</span>
+    </label>
+    <span class="status-msg" id="statusMsg" role="status"></span>
+    <button class="ghost" id="reapply">Apply again</button>
+  </footer>
+
+  <div class="overlay" id="noService" hidden>
+    <div class="dialog" role="alertdialog" aria-labelledby="nsTitle">
+      <h2 id="nsTitle">The background service isn't running</h2>
+      <p>It's the part that talks to the keyboard and fans. Setting it up needs administrator rights once.</p>
+      <p class="hint" id="nsDetail"></p>
+      <div class="actions">
+        <button class="primary" id="installService">Set up service</button>
+        <button class="ghost" id="retry">Try again</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
