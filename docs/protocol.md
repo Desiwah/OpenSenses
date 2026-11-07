@@ -88,6 +88,27 @@ service sets them again.
 
 ## Turbo LED
 
-`SetGamingLEDBehavior(0x10001)` and `(0x1)` switch the turbo LED on other
-Predator models. The PH317-53 answers with status 1 (not supported), so
-OpenSenses tries it but ignores the result.
+`SetGamingLED(0x10001)` turns the turbo LED on and `SetGamingLED(0x1)` off;
+`GetGamingLED(1)` reads `0x100` while it is lit. (PredatorSense's internal
+name for this call is "LED behavior", but it is the `SetGamingLED` method,
+not `SetGamingLEDBehavior`, which rejects these values.)
+
+## Toggles
+
+| Setting | Set | Read |
+| ------- | --- | ---- |
+| LCD overdrive | `SetGamingProfile(0x10 \| on << 48)` | `GetGamingProfile(0)`, bits 48–55 |
+| Windows and Menu keys | `SetGamingProfile(0x2 \| on << 24)` | `GetGamingProfile(0)`, bits 24–31 |
+| Boot animation and sound | `SetGamingMiscSetting(0x6 \| on << 8)` | `GetGamingMiscSetting(6)`, bits 8–15 |
+| Keyboard backlight off after 30 s | `APGeAction.SetFunction(0x6400088402 \| 30 << 40)` for on, without the `30 << 40` for off | not reliable, see below |
+
+The backlight timeout lives in a second WMI class, `APGeAction`
+(`SetFunction` / `GetFunction`, parameters `uiInput` / `uiOutput`). In the
+input, 0x84 is the backlight hotkey number on these models, byte 4 the
+backlight brightness and byte 5 the timeout in seconds. `GetFunction(0x88401)`
+reports `0x1E0000080000` with the timeout on, but on the PH317-53 it didn't
+change after switching the timeout off, so OpenSenses doesn't rely on it.
+
+Sticky Keys is a Windows accessibility setting of the signed-in user
+(`SystemParametersInfo` with `SPI_SETSTICKYKEYS`), so the app sets it
+directly; it doesn't involve the firmware.

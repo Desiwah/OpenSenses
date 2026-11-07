@@ -163,7 +163,64 @@ pub fn decode_gpu_oc(out: u64) -> Option<GpuMode> {
     }
 }
 
-/// `SetGamingLEDBehavior` values for the turbo LED.
+/// `SetGamingProfile` input for LCD overdrive (flag at bit 48).
+pub fn lcd_overdrive(on: bool) -> u64 {
+    0x10 | (on as u64) << 48
+}
+
+/// `SetGamingProfile` input for the Windows and Menu keys (flag at bit 24).
+pub fn win_key(on: bool) -> u64 {
+    0x2 | (on as u64) << 24
+}
+
+/// Decodes `GetGamingProfile(0)`: (LCD overdrive, Windows key).
+pub fn decode_profile(out: u64) -> Option<(bool, bool)> {
+    if out & 0xFF != 0 {
+        return None;
+    }
+    Some(((out >> 48) & 0xFF == 1, (out >> 24) & 0xFF == 1))
+}
+
+/// Misc setting 6: boot logo animation and sound.
+pub const MISC_BOOT_ANIMATION: u64 = 0x06;
+
+pub fn boot_animation(on: bool) -> u64 {
+    MISC_BOOT_ANIMATION | (on as u64) << 8
+}
+
+pub fn decode_misc_flag(out: u64) -> Option<bool> {
+    if out & 0xFF != 0 {
+        return None;
+    }
+    match (out >> 8) & 0xFF {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
+/// `APGeAction.SetFunction` input for the 30-second keyboard backlight
+/// timeout, in PredatorSense's format: 0x84 is the backlight hotkey number
+/// on these models, byte 4 the backlight brightness (100%), byte 5 the
+/// timeout in seconds (0 = never). Sending brightness 0 instead (as some
+/// Linux tools do) left the PH317-53 reporting a different state.
+pub fn backlight_timeout(on: bool) -> u64 {
+    0x64_0008_8402 | if on { 30u64 << 40 } else { 0 }
+}
+
+pub const BACKLIGHT_TIMEOUT_GET: u32 = 0x88401;
+
+/// Only the two shapes the firmware is known to report are trusted;
+/// anything else is treated as "unknown" so it never triggers a re-apply.
+pub fn decode_backlight_timeout(out: u64) -> Option<bool> {
+    match out {
+        0x1E00_0008_0000 => Some(true),
+        0x8_0000 => Some(false),
+        _ => None,
+    }
+}
+
+/// `SetGamingLED` values for the turbo LED.
 pub const TURBO_LED_ON: u64 = 0x10001;
 pub const TURBO_LED_OFF: u64 = 0x1;
 
@@ -207,6 +264,21 @@ mod tests {
         assert_eq!(&b[..8], &[1, 4, 50, 0, 0, 1, 2, 3]);
         let s = kb_backlight(Effect::Static, 9, 75, Direction::RightToLeft, c);
         assert_eq!(&s[..8], &[0, 0, 75, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn toggles_match_laptop_readings() {
+        // values read from the PH317-53
+        assert_eq!(decode_profile(0x1000000), Some((false, true)));
+        assert_eq!(decode_profile(0x1000001000000), Some((true, true)));
+        assert_eq!(lcd_overdrive(true), 0x1000000000010);
+        assert_eq!(win_key(true), 0x1000002);
+        assert_eq!(backlight_timeout(true), 0x1E6400088402);
+        assert_eq!(backlight_timeout(false), 0x6400088402);
+        assert_eq!(decode_backlight_timeout(0x1E0000080000), Some(true));
+        assert_eq!(decode_backlight_timeout(0x6400000000), None);
+        assert_eq!(boot_animation(true), 0x106);
+        assert_eq!(decode_misc_flag(0x0), Some(false));
     }
 
     #[test]
