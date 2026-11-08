@@ -8,12 +8,15 @@ use super::{Backend, Capabilities, GpuLevel, Observed, Sensors};
 use crate::models::{self, Model};
 use crate::protocol::{self as p, Iface, Input};
 use crate::settings::{Fan, FanMode, GpuMode, Rgb, Toggle, Toggles};
+use crate::snapshot::{Snapshot, Source};
 use anyhow::{anyhow, bail, Result};
 
 /// Calls one firmware method and returns its output as a number.
 pub trait Transport {
     fn name(&self) -> &'static str;
     fn call(&self, iface: Iface, method: &str, input: Input) -> Result<u64>;
+    /// For the one method that returns a byte array (`GetGamingKBBacklight`).
+    fn call_bytes(&self, iface: Iface, method: &str, input: Input) -> Result<Vec<u8>>;
     /// Whether the `APGeAction` interface exists on this laptop.
     fn has_apge(&self) -> bool;
 }
@@ -24,6 +27,8 @@ pub trait GpuClocks {
     fn pci_ids(&self) -> Result<(u16, u32)>;
     /// Current graphics clock offset in MHz.
     fn core_offset(&self) -> Result<i32>;
+    /// Current memory clock offset, in NVAPI's MHz.
+    fn memory_offset(&self) -> Result<i32>;
     /// Sets graphics and memory clock offsets, in PredatorSense's (NVAPI's) MHz.
     fn set_offsets(&self, core_mhz: i32, memory_mhz: i32) -> Result<()>;
 }
@@ -323,6 +328,109 @@ impl<T: Transport> Backend for AcerBackend<T> {
         Observed { zones: ok.then_some(zones), fans, gpu, gpu_core_offset, toggles }
     }
 
+    fn snapshot(&mut self) -> Option<Snapshot> {
+        let seen = self.observe();
+        let kb_effect = self
+            .t
+            .call_bytes(Iface::Gaming, "GetGamingKBBacklight", Input::U32(0))
+            .ok()
+            .filter(|b| p::decode_kb_backlight(b).is_some())
+            .map(|b| b[..16.min(b.len())].to_vec());
+        let fan_speeds = seen
+            .fans
+            .iter()
+            .filter(|(_, m)| *m == FanMode::Custom)
+            .filter_map(|&(f, _)| {
+                self.call("GetGamingFanSpeed", Input::U32(p::fan_speed_query(f))).ok().and_then(p::decode_fan_speed).map(|s| (f, s))
+            })
+            .collect();
+        let gpu_level = if self.gpu_to_firmware() {
+            self.call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_OC as u32))
+                .ok()
+                .filter(|v| v & 0xFF == 0)
+                .map(|v| ((v >> 8) & 0xFF) as u8)
+        } else {
+            None
+        };
+        let (gpu_core, gpu_memory) = match &self.gpu {
+            Ok(g) if !self.caps.gpu_levels.is_empty() => (g.core_offset().ok(), g.memory_offset().ok()),
+            _ => (None, None),
+        };
+        let turbo_led = self.call("GetGamingLED", Input::U32(1)).ok().filter(|v| v & 0xFF == 0).map(|v| v & 0xFF00 != 0);
+        Some(Snapshot {
+            taken: crate::snapshot::now(),
+            source: Source::Laptop,
+            product: self.caps.product.clone(),
+            kb_effect,
+            zones: seen.zones.filter(|_| self.caps.lighting),
+            fans: seen.fans,
+            fan_speeds,
+            gpu_level,
+            gpu_core,
+            gpu_memory,
+            turbo_led,
+            toggles: seen.toggles,
+        })
+    }
+
+    fn factory_snapshot(&self) -> Option<Snapshot> {
+        self.model.map(|m| Snapshot::factory(m, &self.caps.toggles))
+    }
+
+    fn restore(&mut self, s: &Snapshot) -> Vec<String> {
+        let mut errors = Vec::new();
+        let mut note = |what: &str, r: Result<()>| {
+            if let Err(e) = r {
+                errors.push(format!("{what}: {e:#}"));
+            }
+        };
+        if self.caps.lighting {
+            let fx = s.kb_effect.as_deref().and_then(|b| <[u8; 16]>::try_from(&b[..16.min(b.len())]).ok());
+            if let Some(fx) = fx {
+                note("lighting effect", self.set_effect(fx));
+            }
+            // Zone colours only show (and only make sense to send) with the static effect.
+            if fx.map(|f| f[0] == 0).unwrap_or(true) {
+                if let Some(z) = s.zones {
+                    for (i, c) in z.iter().enumerate() {
+                        note("zone colour", self.set_zone(i as u8 + 1, *c));
+                    }
+                }
+            }
+        }
+        for &(fan, mode) in &s.fans {
+            if !self.caps.fans.contains(&fan) {
+                continue;
+            }
+            let speed = s.fan_speeds.iter().find(|(f, _)| *f == fan).map(|(_, p)| *p);
+            match (mode, speed) {
+                (FanMode::Custom, Some(pct)) => {
+                    note("fan mode", self.set_fan_mode(fan, FanMode::Custom));
+                    note("fan speed", self.set_fan_speed(fan, pct));
+                }
+                (FanMode::Custom, None) => note("fan mode", self.set_fan_mode(fan, FanMode::Auto)),
+                (m, _) => note("fan mode", self.set_fan_mode(fan, m)),
+            }
+        }
+        if let (Some(level), true) = (s.gpu_level, self.gpu_to_firmware()) {
+            note("GPU level", self.set("SetGamingMiscSetting", Input::U64(p::MISC_GPU_OC | (level as u64) << 8)));
+        }
+        if s.gpu_core.is_some() || s.gpu_memory.is_some() {
+            if let Ok(g) = &self.gpu {
+                note("GPU clocks", g.set_offsets(s.gpu_core.unwrap_or(0), s.gpu_memory.unwrap_or(0)));
+            }
+        }
+        if let Some(on) = s.turbo_led {
+            let _ = self.set_turbo_led(on);
+        }
+        for t in self.caps.toggles.clone() {
+            if let Some(on) = s.toggles.get(t) {
+                note("setting", self.set_toggle(t, on));
+            }
+        }
+        errors
+    }
+
     fn diagnostics(&mut self) -> Vec<String> {
         let mut out = Vec::new();
         let raw = |r: Result<u64>| r.map(|v| format!("0x{v:X}")).unwrap_or_else(|e| format!("error: {e:#}"));
@@ -333,8 +441,15 @@ impl<T: Transport> Backend for AcerBackend<T> {
             out.push(format!("APGeAction.GetFunction(0x88401) = {}", raw(self.apge("GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET)))));
             out.push(format!("APGeAction.GetFunction(0x207) = {}", raw(self.apge("GetFunction", Input::U32(p::COOL_BOOST_GET)))));
         }
+        let kb = self.t.call_bytes(Iface::Gaming, "GetGamingKBBacklight", Input::U32(0));
+        out.push(format!("GetGamingKBBacklight(0) = {kb:02X?}"));
         match &self.gpu {
-            Ok(g) => out.push(format!("GPU ids = {:?}, core offset = {:?}", g.pci_ids().ok(), g.core_offset().ok())),
+            Ok(g) => out.push(format!(
+                "GPU ids = {:?}, core offset = {:?}, memory offset = {:?}",
+                g.pci_ids().ok(),
+                g.core_offset().ok(),
+                g.memory_offset().ok()
+            )),
             Err(e) => out.push(format!("GPU clocks unavailable: {e}")),
         }
         out

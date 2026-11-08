@@ -134,6 +134,27 @@ impl Wmi {
         Ok(Self { svc, gaming, apge })
     }
 
+    /// Calls a method and returns its raw output value.
+    unsafe fn call_raw(&self, c: &WmiClass, method: &str, input: Input) -> Result<VARIANT> {
+        let m = wide(method);
+        let mut in_def: Option<IWbemClassObject> = None;
+        c.class.GetMethod(PCWSTR(m.as_ptr()), 0, &mut in_def, std::ptr::null_mut())?;
+        let in_def = in_def.ok_or_else(|| anyhow!("{}.{method}: no input signature", c.name))?;
+        let params = in_def.SpawnInstance(0)?;
+        let value = match input {
+            Input::U32(n) => VARIANT::from(n as i32),
+            Input::U64(n) => VARIANT::from(BSTR::from(n.to_string())),
+            Input::Bytes(b) => InitVariantFromBuffer(b.as_ptr() as *const _, b.len() as u32)?,
+        };
+        params.Put(PCWSTR(wide(c.input).as_ptr()), 0, &value, 0)?;
+        let mut out: Option<IWbemClassObject> = None;
+        self.svc.ExecMethod(&c.path, &BSTR::from(method), WBEM_GENERIC_FLAG_TYPE(0), None, &params, Some(&mut out), None)?;
+        let out = out.ok_or_else(|| anyhow!("{}.{method}: no output", c.name))?;
+        let mut v = VARIANT::default();
+        out.Get(PCWSTR(wide(c.output).as_ptr()), 0, &mut v, None, None)?;
+        Ok(v)
+    }
+
     fn call_on(&self, c: &WmiClass, method: &str, input: Input) -> Result<u64> {
         unsafe {
             let m = wide(method);
@@ -173,6 +194,20 @@ impl Wmi {
 impl Transport for Wmi {
     fn name(&self) -> &'static str {
         "Windows WMI"
+    }
+
+    fn call_bytes(&self, iface: Iface, method: &str, input: Input) -> Result<Vec<u8>> {
+        let c = match iface {
+            Iface::Gaming => &self.gaming,
+            Iface::Apge => self.apge.as_ref().ok_or_else(|| anyhow!("APGeAction is not available"))?,
+        };
+        unsafe {
+            let v = self.call_raw(c, method, input)?;
+            let mut buf = [0u8; 16];
+            windows::Win32::System::Variant::VariantToBuffer(&v, buf.as_mut_ptr() as *mut _, buf.len() as u32)
+                .map_err(|e| anyhow!("{method}: {e}"))?;
+            Ok(buf.to_vec())
+        }
     }
 
     fn call(&self, iface: Iface, method: &str, input: Input) -> Result<u64> {

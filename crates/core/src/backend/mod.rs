@@ -112,6 +112,19 @@ pub trait Backend {
     fn diagnostics(&mut self) -> Vec<String> {
         Vec::new()
     }
+    /// Reads everything OpenSenses can change, to restore it later. `None`
+    /// when this backend can't read the hardware.
+    fn snapshot(&mut self) -> Option<crate::snapshot::Snapshot> {
+        None
+    }
+    /// Acer's defaults for this model, when it's a known one.
+    fn factory_snapshot(&self) -> Option<crate::snapshot::Snapshot> {
+        None
+    }
+    /// Puts a snapshot back; returns the errors.
+    fn restore(&mut self, _s: &crate::snapshot::Snapshot) -> Vec<String> {
+        vec!["restoring isn't possible without the hardware interface".into()]
+    }
 }
 
 /// Features a known model has that aren't supported yet, for the app to list.

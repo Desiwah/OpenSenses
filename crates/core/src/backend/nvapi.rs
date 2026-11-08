@@ -156,6 +156,10 @@ impl super::acer::GpuClocks for Nvapi {
         self.offset(CLOCK_GRAPHICS)
     }
 
+    fn memory_offset(&self) -> Result<i32> {
+        self.offset(CLOCK_MEMORY)
+    }
+
     fn set_offsets(&self, core_mhz: i32, memory_mhz: i32) -> Result<()> {
         Nvapi::set_offsets(self, core_mhz, memory_mhz)
     }

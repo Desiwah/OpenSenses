@@ -46,6 +46,7 @@ pub struct Nvml {
     set_gpc: Option<unsafe extern "C" fn(Device, c_int) -> c_int>,
     get_gpc: Option<unsafe extern "C" fn(Device, *mut c_int) -> c_int>,
     set_mem: Option<unsafe extern "C" fn(Device, c_int) -> c_int>,
+    get_mem: Option<unsafe extern "C" fn(Device, *mut c_int) -> c_int>,
 }
 
 unsafe fn sym<T>(lib: *mut c_void, name: &CStr) -> Option<T> {
@@ -81,6 +82,7 @@ impl Nvml {
                 set_gpc: sym(lib, c"nvmlDeviceSetGpcClkVfOffset"),
                 get_gpc: sym(lib, c"nvmlDeviceGetGpcClkVfOffset"),
                 set_mem: sym(lib, c"nvmlDeviceSetMemClkVfOffset"),
+                get_mem: sym(lib, c"nvmlDeviceGetMemClkVfOffset"),
             };
             if me.set_offsets.is_none() && (me.set_gpc.is_none() || me.set_mem.is_none()) {
                 bail!("this NVIDIA driver can't set clock offsets");
@@ -116,6 +118,27 @@ impl Nvml {
     }
 }
 
+impl Nvml {
+    fn get_one(&self, clock_type: c_uint) -> Result<i32> {
+        unsafe {
+            if let Some(f) = self.get_offsets {
+                let mut o = ClockOffset { version: CLOCK_OFFSET_V1, clock_type, pstate: PSTATE_0, offset_mhz: 0, min_offset_mhz: 0, max_offset_mhz: 0 };
+                if f(self.dev, &mut o) == 0 {
+                    return Ok(o.offset_mhz);
+                }
+            }
+            let old = if clock_type == CLOCK_GRAPHICS { self.get_gpc } else { self.get_mem };
+            if let Some(f) = old {
+                let mut v: c_int = 0;
+                if f(self.dev, &mut v) == 0 {
+                    return Ok(v);
+                }
+            }
+        }
+        bail!("reading the GPU clock offset failed")
+    }
+}
+
 impl super::acer::GpuClocks for Nvml {
     fn pci_ids(&self) -> Result<(u16, u32)> {
         let mut info: PciInfo = unsafe { std::mem::zeroed() };
@@ -128,21 +151,11 @@ impl super::acer::GpuClocks for Nvml {
     }
 
     fn core_offset(&self) -> Result<i32> {
-        unsafe {
-            if let Some(f) = self.get_offsets {
-                let mut o = ClockOffset { version: CLOCK_OFFSET_V1, clock_type: CLOCK_GRAPHICS, pstate: PSTATE_0, offset_mhz: 0, min_offset_mhz: 0, max_offset_mhz: 0 };
-                if f(self.dev, &mut o) == 0 {
-                    return Ok(o.offset_mhz);
-                }
-            }
-            if let Some(f) = self.get_gpc {
-                let mut v: c_int = 0;
-                if f(self.dev, &mut v) == 0 {
-                    return Ok(v);
-                }
-            }
-        }
-        bail!("reading the GPU clock offset failed")
+        self.get_one(CLOCK_GRAPHICS)
+    }
+
+    fn memory_offset(&self) -> Result<i32> {
+        Ok(self.get_one(CLOCK_MEM)? / 2)
     }
 
     fn set_offsets(&self, core_mhz: i32, memory_mhz: i32) -> Result<()> {

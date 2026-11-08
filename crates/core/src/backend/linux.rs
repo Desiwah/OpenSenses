@@ -54,7 +54,8 @@ impl Driver {
         Ok(me)
     }
 
-    fn raw(&self, iface: Iface, method: &str, input: Input) -> Result<u64> {
+    /// The output as a number (first 8 bytes of a buffer) and as bytes.
+    fn raw(&self, iface: Iface, method: &str, input: Input) -> Result<(u64, Vec<u8>)> {
         let id = p::method_id(iface, method).with_context(|| format!("unknown firmware method {method}"))?;
         let bytes = input.bytes();
         let mut c = Call {
@@ -77,14 +78,15 @@ impl Driver {
             bail!("{method} failed: {}", std::io::Error::last_os_error());
         }
         Ok(match c.out_type {
-            1 => c.out_int,
+            1 => (c.out_int, c.out_int.to_le_bytes().to_vec()),
             2 => {
+                let bytes = c.out[..(c.out_len as usize).min(DATA)].to_vec();
                 let mut b = [0u8; 8];
-                let n = (c.out_len as usize).min(8);
-                b[..n].copy_from_slice(&c.out[..n]);
-                u64::from_le_bytes(b)
+                let n = bytes.len().min(8);
+                b[..n].copy_from_slice(&bytes[..n]);
+                (u64::from_le_bytes(b), bytes)
             }
-            _ => 0,
+            _ => (0, Vec::new()),
         })
     }
 }
@@ -95,7 +97,11 @@ impl Transport for Driver {
     }
 
     fn call(&self, iface: Iface, method: &str, input: Input) -> Result<u64> {
-        self.raw(iface, method, input)
+        Ok(self.raw(iface, method, input)?.0)
+    }
+
+    fn call_bytes(&self, iface: Iface, method: &str, input: Input) -> Result<Vec<u8>> {
+        Ok(self.raw(iface, method, input)?.1)
     }
 
     fn has_apge(&self) -> bool {
