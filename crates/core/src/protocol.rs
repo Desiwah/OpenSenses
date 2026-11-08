@@ -185,6 +185,42 @@ pub fn fan_speed(fan: Fan, percent: u8) -> u64 {
     id | (percent.min(100) as u64) << 8
 }
 
+/// `GetGamingFanSpeed` input for one fan (the same ids as `fan_speed`).
+pub fn fan_speed_query(fan: Fan) -> u32 {
+    (fan_speed(fan, 0) & 0xFF) as u32
+}
+
+/// Decodes `GetGamingFanSpeed`: the set percentage in bits 8-15.
+pub fn decode_fan_speed(out: u64) -> Option<u8> {
+    if out & 0xFF != 0 {
+        return None;
+    }
+    let p = ((out >> 8) & 0xFF) as u8;
+    (p <= 100).then_some(p)
+}
+
+/// Reads a `SetGamingKBBacklight` payload back into its parts, rejecting
+/// anything that isn't a valid effect (so a bad read is never re-sent).
+pub fn decode_kb_backlight(p: &[u8]) -> Option<(Effect, u8, u8, Direction, Rgb)> {
+    if p.len() < 8 {
+        return None;
+    }
+    let effect = match p[0] {
+        0 => Effect::Static,
+        1 => Effect::Breathing,
+        2 => Effect::Neon,
+        3 => Effect::Wave,
+        4 => Effect::Shifting,
+        5 => Effect::Zoom,
+        _ => return None,
+    };
+    if p[1] > 9 || p[2] > 100 {
+        return None;
+    }
+    let direction = if p[4] == 2 { Direction::LeftToRight } else { Direction::RightToLeft };
+    Some((effect, p[1], p[2], direction, Rgb { r: p[5], g: p[6], b: p[7] }))
+}
+
 /// Query for `GetGamingFanBehavior` covering these fans.
 pub fn fan_query(fans: &[Fan]) -> u32 {
     fans.iter().map(|f| fan_mask(*f)).fold(0, |a, b| a | b) as u32
@@ -408,6 +444,12 @@ mod tests {
         assert_eq!(boot_animation(true), 0x106);
         assert_eq!(decode_misc_flag(0x0), Some(false));
         assert_eq!(decode_cool_boost(0x1010000), Some(false));
+        let fx = kb_backlight(Effect::Wave, 5, 75, Direction::LeftToRight, Rgb::default());
+        let back = decode_kb_backlight(&fx).unwrap();
+        assert_eq!((back.0, back.1, back.2, back.3), (Effect::Wave, 5, 75, Direction::LeftToRight));
+        assert_eq!(decode_kb_backlight(&[9; 16]), None);
+        assert_eq!(fan_speed_query(Fan::Gpu), 4);
+        assert_eq!(decode_fan_speed(0x3200), Some(50));
         assert_eq!(decode_cool_boost(0x1010100), Some(true));
         assert_eq!((cool_boost(true), cool_boost(false)), (0x10007, 0x7));
     }
