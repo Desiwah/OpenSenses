@@ -35,6 +35,12 @@ async fn reapply() -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(|| call(Request::Reapply)).await.map_err(|e| e.to_string())?
 }
 
+/// Programs running in this Windows session, for picking a game to add.
+#[tauri::command]
+async fn running_apps() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(pcore::procs::user_apps).await.unwrap_or_default()
+}
+
 /// Registers the background service when it is missing (asks for admin).
 #[tauri::command]
 fn install_service(app: tauri::AppHandle) -> Result<(), String> {
@@ -113,7 +119,7 @@ fn set_sticky_keys(on: bool) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, install_service, get_sticky_keys, set_sticky_keys])
+        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, running_apps, install_service, get_sticky_keys, set_sticky_keys])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }
