@@ -146,3 +146,17 @@ mod tests {
         assert_eq!(8 + 8 * super::CLOCK_SIZE + 4 * 24, super::PSTATE_SIZE);
     }
 }
+
+impl super::acer::GpuClocks for Nvapi {
+    fn pci_ids(&self) -> Result<(u16, u32)> {
+        Nvapi::pci_ids(self)
+    }
+
+    fn core_offset(&self) -> Result<i32> {
+        self.offset(CLOCK_GRAPHICS)
+    }
+
+    fn set_offsets(&self, core_mhz: i32, memory_mhz: i32) -> Result<()> {
+        Nvapi::set_offsets(self, core_mhz, memory_mhz)
+    }
+}
