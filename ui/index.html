@@ -16,11 +16,13 @@
       <button class="tab" data-page="fans">Fans</button>
       <button class="tab" data-page="gpu">GPU</button>
       <button class="tab" data-page="monitor">Monitor</button>
+      <button class="tab" data-page="games">Games</button>
       <button class="tab" data-page="settings">Settings</button>
       <div class="rail-temps" id="railTemps" aria-live="polite"></div>
     </nav>
 
     <main>
+      <p class="banner" id="gameBanner" role="status" hidden></p>
       <!-- Lighting -->
       <section class="page" id="page-lighting">
         <div class="note" id="perKeyNote" hidden>
@@ -108,6 +110,24 @@
         </header>
         <div class="gauges" id="gauges"></div>
       </section>
+      <!-- Games -->
+      <section class="page" id="page-games" hidden>
+        <header class="page-head">
+          <h1>Games</h1>
+          <p>GameSync switches to a game's own settings while it runs and back to your everyday ones when it closes. The background service watches for the games, so this app doesn't have to be open.</p>
+        </header>
+        <div class="toggles" id="gameSyncRow"></div>
+        <div class="add-game">
+          <label class="text-field"><span>Program file</span>
+            <input id="gameExe" list="runningApps" placeholder="e.g. eldenring.exe" spellcheck="false" autocomplete="off">
+          </label>
+          <datalist id="runningApps"></datalist>
+          <button type="button" class="primary" id="addGame">Add game</button>
+        </div>
+        <p class="hint" id="addGameHint">Start the game first and it shows up in the list as you type, or enter its .exe name.</p>
+        <div class="games" id="gameList"></div>
+      </section>
+
       <!-- Settings -->
       <section class="page" id="page-settings" hidden>
         <header class="page-head">

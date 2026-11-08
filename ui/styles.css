@@ -24,7 +24,7 @@ body {
   grid-template-rows: 1fr auto;
   overflow: hidden;
 }
-button, input { font: inherit; color: inherit; }
+button, input, select { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 [hidden] { display: none !important; }
 
@@ -176,6 +176,37 @@ input[type="range"] { width: 100%; accent-color: var(--focus); }
 .note { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 18px 20px; max-width: 640px; }
 .note h2 { font: 400 20px var(--display); margin: 0 0 6px; }
 .note p { margin: 0; color: var(--muted); }
+
+/* Games */
+.banner {
+  margin: 0 0 18px; padding: 10px 14px; max-width: 760px; border: 1px solid var(--focus);
+  border-radius: var(--radius-s); background: #283150; color: var(--text);
+}
+.add-game { display: flex; align-items: flex-end; gap: 10px; margin: 22px 0 6px; max-width: 760px; }
+.text-field { display: grid; gap: 4px; flex: 1; color: var(--muted); font-size: 13px; }
+.text-field input, .game select {
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px 10px;
+}
+.text-field input { font-size: 15px; }
+.games { display: grid; gap: 12px; margin-top: 18px; max-width: 760px; }
+.game { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 16px 20px; }
+.game[data-running="true"] { border-color: var(--focus); }
+.game-head { display: flex; align-items: center; gap: 14px; }
+.game-head h3 { font: 400 20px var(--display); margin: 0; }
+.game-head .exe { color: var(--muted); font-size: 13px; }
+.game-head .live { color: var(--focus); font-size: 13px; }
+.game-head .sw { margin-left: auto; }
+.game-rows { display: grid; grid-template-columns: 130px 1fr; gap: 10px 16px; align-items: center; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.game-rows > span { color: var(--muted); }
+.game .detail { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.game select { padding: 6px 8px; min-width: 190px; }
+.game .mini { display: inline-flex; gap: 4px; }
+.game .mini i { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--line); }
+.game .fan-sliders { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px 22px; }
+.game .fan-pct { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.game .fan-pct input { width: 110px; }
+.game[data-enabled="false"] .game-rows { opacity: .5; }
+.empty { color: var(--muted); }
 
 /* Status bar */
 .status {

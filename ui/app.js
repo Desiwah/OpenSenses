@@ -34,7 +34,8 @@ function mockInvoke(cmd, args) {
         lighting: { effect: "static", zones: [teal, { r: 70, g: 120, b: 255 }, { r: 190, g: 70, b: 255 }, { r: 255, g: 70, b: 120 }],
           zone_on: [true, true, true, true], colour: teal, speed: 4, brightness: 100, direction: "right_to_left" },
         fans: { mode: "auto", cpu_percent: 50, gpu_percent: 50 },
-        gpu: "normal", keep_applied: true,
+        gpu: "normal", keep_applied: true, game_sync: true,
+        games: [{ exe: "eldenring.exe", enabled: true, lighting: null, fans: { mode: "max", cpu_percent: 50, gpu_percent: 50, gpu2_percent: 50 }, gpu: "turbo", win_key: false }],
       },
       sensors: {}, capabilities: mockCaps(),
       backend: "preview", errors: [], overheat_guard: false,
@@ -52,6 +53,8 @@ function mockInvoke(cmd, args) {
     sys_temp: 49, cpu_fan_rpm: Math.round(3000 + 300 * Math.sin(t / 5)), gpu_fan_rpm: Math.round(3450 + 250 * Math.sin(t / 6)),
   };
   if (cmd === "get_sticky_keys") return Promise.resolve(mock.sticky);
+  if (cmd === "running_apps") return Promise.resolve(["discord.exe", "eldenring.exe", "steam.exe", "cyberpunk2077.exe"]);
+  mock.active_game = location.search.includes("playing") ? "eldenring.exe" : null;
   if (cmd === "set_sticky_keys") { mock.sticky = args.on; return Promise.resolve(null); }
   if (cmd === "set_settings") {
     mock.settings = JSON.parse(JSON.stringify(args.settings));
@@ -67,6 +70,7 @@ let settings = null;     // what the user is editing
 let selectedZone = 0;
 let saveTimer = null;
 let lastToggles = "";
+let lastGame;
 const history = { cpu_temp: [], gpu_temp: [], sys_temp: [], cpu_fan_rpm: [], gpu_fan_rpm: [] };
 const $ = (id) => document.getElementById(id);
 
@@ -122,6 +126,7 @@ async function refresh(first) {
       renderSettings();
     }
     lastToggles = JSON.stringify(st.toggles_now);
+    if (st.active_game !== lastGame) { lastGame = st.active_game; renderGames(); }
   } catch (e) {
     $("noService").hidden = false;
     $("nsDetail").textContent = String(e);
@@ -510,6 +515,174 @@ function renderSettings() {
     (v) => change((s) => (s.fahrenheit = v)));
 }
 
+/* ---------- games (GameSync) ---------- */
+
+const EFFECT_NAMES = Object.fromEntries(EFFECTS.map(([k, n]) => [k, n]));
+const gameTitle = (exe) => {
+  const base = exe.replace(/\.exe$/i, "");
+  return base.charAt(0).toUpperCase() + base.slice(1);
+};
+const exeName = (text) => text.trim().split(/[\\/]/).pop().toLowerCase();
+
+function option(value, label, selected) {
+  const o = document.createElement("option");
+  o.value = value; o.textContent = label; o.selected = selected;
+  return o;
+}
+
+function choice(items, current, onPick, label) {
+  const sel = document.createElement("select");
+  sel.setAttribute("aria-label", label);
+  sel.replaceChildren(...items.map(([v, l]) => option(v, l, v === current)));
+  sel.onchange = () => onPick(sel.value);
+  return sel;
+}
+
+function lightingPreview(l) {
+  const span = document.createElement("span");
+  span.className = "mini";
+  const colours = l.effect === "static" ? l.zones.map((c, i) => (l.zone_on[i] ? hex(c) : "transparent"))
+    : ["breathing", "shifting", "zoom"].includes(l.effect) ? [hex(l.colour)] : [];
+  for (const c of colours) { const i = document.createElement("i"); i.style.background = c; span.appendChild(i); }
+  const t = document.createElement("span");
+  t.textContent = ` ${EFFECT_NAMES[l.effect] || l.effect}, ${l.brightness}%`;
+  const wrap = document.createElement("span");
+  wrap.append(span, t);
+  return wrap;
+}
+
+function gameCard(g, i, caps) {
+  const card = document.createElement("div");
+  card.className = "game";
+  card.dataset.enabled = String(g.enabled);
+  const running = state && state.active_game === g.exe;
+  card.dataset.running = String(!!running);
+
+  const head = document.createElement("div");
+  head.className = "game-head";
+  head.innerHTML = `<h3></h3><span class="exe"></span><span class="live"></span><label class="sw"><input type="checkbox" role="switch"><span></span></label>`;
+  head.querySelector("h3").textContent = gameTitle(g.exe);
+  head.querySelector(".exe").textContent = g.exe;
+  head.querySelector(".live").textContent = running ? "Running, profile in use" : "";
+  const on = head.querySelector("input");
+  on.checked = g.enabled;
+  on.setAttribute("aria-label", `Use the profile for ${g.exe}`);
+  on.onchange = () => change((s) => (s.games[i].enabled = on.checked));
+  const del = document.createElement("button");
+  del.type = "button"; del.className = "ghost"; del.textContent = "Remove";
+  del.onclick = () => change((s) => s.games.splice(i, 1));
+  head.appendChild(del);
+  card.appendChild(head);
+
+  const rows = document.createElement("div");
+  rows.className = "game-rows";
+  const row = (label, ...content) => {
+    const l = document.createElement("span"); l.textContent = label;
+    const d = document.createElement("div"); d.className = "detail"; d.append(...content);
+    rows.append(l, d);
+  };
+  const edit = (fn) => change((s) => fn(s.games[i]));
+
+  if (caps.lighting) {
+    const parts = [choice([["keep", "Keep everyday lighting"], ["own", "Its own lighting"]], g.lighting ? "own" : "keep",
+      (v) => edit((p) => (p.lighting = v === "own" ? clone(settings.lighting) : null)), "Lighting")];
+    if (g.lighting) {
+      parts.push(lightingPreview(g.lighting));
+      const take = document.createElement("button");
+      take.type = "button"; take.className = "ghost"; take.textContent = "Use what's on the Lighting page";
+      take.onclick = () => { edit((p) => (p.lighting = clone(settings.lighting))); setStatus(`Lighting saved for ${gameTitle(g.exe)}`); };
+      parts.push(take);
+    }
+    row("Lighting", ...parts);
+  }
+
+  const fans = caps.fans || [];
+  if (fans.length) {
+    const mode = g.fans ? g.fans.mode : "keep";
+    const parts = [choice([["keep", "Keep everyday fans"], ["auto", "Auto"], ["max", "Max"], ["custom", "Custom"]], mode, (v) => edit((p) => {
+      if (v === "keep") p.fans = null;
+      else p.fans = Object.assign(clone(p.fans || settings.fans), { mode: v });
+    }), "Fans")];
+    if (g.fans && g.fans.mode === "custom") {
+      const box = document.createElement("div");
+      box.className = "fan-sliders";
+      parts.push(box);
+      for (const id of fans) {
+        const key = `${id}_percent`;
+        const lab = document.createElement("label");
+        lab.className = "fan-pct";
+        const val = g.fans[key] == null ? 50 : g.fans[key];
+        lab.innerHTML = `<span></span><input type="range" min="0" max="100" step="5"><b></b>`;
+        lab.querySelector("span").textContent = (FAN_NAMES[id] || id).replace(" fan", "");
+        const r = lab.querySelector("input");
+        r.value = val;
+        r.setAttribute("aria-label", `${FAN_NAMES[id] || id} speed while playing`);
+        lab.querySelector("b").textContent = `${val}%`;
+        r.oninput = () => { lab.querySelector("b").textContent = `${r.value}%`; settings.games[i].fans[key] = Number(r.value); save(); };
+        box.appendChild(lab);
+      }
+    }
+    row("Fans", ...parts);
+  }
+
+  const levels = caps.gpu_levels || [];
+  if (levels.length) {
+    row("GPU", choice([["keep", "Keep everyday level"], ...levels.map((l) => [l.mode, GPU_LEVEL_NAMES[l.mode] || l.mode])],
+      g.gpu || "keep", (v) => edit((p) => (p.gpu = v === "keep" ? null : v)), "GPU level"));
+  }
+
+  if ((caps.toggles || []).includes("win_key")) {
+    const cur = g.win_key == null ? "keep" : g.win_key ? "on" : "off";
+    row("Windows key", choice([["keep", "Keep everyday setting"], ["off", "Blocked while playing"], ["on", "Works while playing"]], cur,
+      (v) => edit((p) => (p.win_key = v === "keep" ? null : v === "on")), "Windows key"));
+  }
+
+  card.appendChild(rows);
+  return card;
+}
+
+function renderGames() {
+  const caps = (state && state.capabilities) || {};
+  const games = settings.games || [];
+  $("gameSyncRow").replaceChildren(switchRow("GameSync",
+    "Turn off to keep your everyday settings even while a listed game runs.",
+    settings.game_sync !== false, false, (on) => change((s) => (s.game_sync = on))));
+  const list = games.map((g, i) => gameCard(g, i, caps));
+  if (!list.length) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "No games yet.";
+    list.push(p);
+  }
+  $("gameList").replaceChildren(...list);
+  renderGameBanner();
+}
+
+function renderGameBanner() {
+  const exe = state && state.active_game;
+  const b = $("gameBanner");
+  b.hidden = !exe || !settings || settings.game_sync === false;
+  if (exe) b.textContent = `${gameTitle(exe)} is running, so its game profile is in use. What it changes comes back to your everyday settings when the game closes.`;
+}
+
+async function loadRunningApps() {
+  let apps = [];
+  try { apps = await invoke("running_apps"); } catch { apps = []; }
+  $("runningApps").replaceChildren(...apps.map((a) => option(a, gameTitle(a), false)));
+}
+
+function addGame() {
+  const exe = exeName($("gameExe").value);
+  if (!exe) return;
+  if ((settings.games || []).some((g) => g.exe === exe)) { setStatus(`${exe} is already in the list`, true); return; }
+  change((s) => {
+    s.games = s.games || [];
+    s.games.push({ exe, enabled: true, lighting: null, fans: null, gpu: null, win_key: null });
+  });
+  $("gameExe").value = "";
+  setStatus(`Added ${exe}. Pick what should change while it runs.`);
+}
+
 /* ---------- rendering ---------- */
 
 function renderLighting() {
@@ -704,6 +877,7 @@ function renderAll() {
   renderFans();
   renderGpu();
   renderSettings();
+  renderGames();
   $("keepApplied").checked = settings.keep_applied;
   renderLive();
 }
@@ -725,6 +899,10 @@ $("reapply").onclick = async () => {
   } catch (e) { setStatus(String(e), true); }
 };
 $("retry").onclick = () => refresh(true);
+$("addGame").onclick = addGame;
+$("gameExe").addEventListener("keydown", (e) => { if (e.key === "Enter") addGame(); });
+$("gameExe").addEventListener("focus", loadRunningApps);
+document.querySelector('.tab[data-page="games"]').addEventListener("click", loadRunningApps);
 $("installService").onclick = async () => {
   $("nsDetail").textContent = "Waiting for you to approve the administrator prompt…";
   try { await invoke("install_service"); } catch (e) { $("nsDetail").textContent = String(e); return; }
