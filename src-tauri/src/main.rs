@@ -43,6 +43,29 @@ async fn running_apps() -> Vec<pcore::procs::App> {
     tauri::async_runtime::spawn_blocking(pcore::procs::user_apps).await.unwrap_or_default()
 }
 
+/// Where a game's program lives, from Windows' records of programs that
+/// have been run, for games added by name.
+#[tauri::command]
+async fn find_program(exe: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || pcore::procs::find_program(&exe)).await.ok().flatten()
+}
+
+/// Lets the user pick a game's program file.
+#[tauri::command]
+async fn pick_program(app: tauri::AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    let mut d = app.dialog().file().set_title("Choose the game's program file");
+    if cfg!(windows) {
+        d = d.add_filter("Programs", &["exe"]);
+    }
+    tauri::async_runtime::spawn_blocking(move || d.blocking_pick_file())
+        .await
+        .ok()
+        .flatten()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// A program's icon as a data URL, for the game list.
 #[tauri::command]
 async fn app_icon(path: String) -> Option<String> {
@@ -127,7 +150,8 @@ fn set_sticky_keys(on: bool) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, running_apps, app_icon, install_service, get_sticky_keys, set_sticky_keys])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, running_apps, app_icon, find_program, pick_program, install_service, get_sticky_keys, set_sticky_keys])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }
