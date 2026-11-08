@@ -29,6 +29,8 @@ pub struct State {
     pub overheat_guard: bool,
     /// What each toggle is actually set to on the laptop right now.
     pub toggles_now: Toggles,
+    /// Program name of the game whose GameSync profile is in use.
+    pub active_game: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

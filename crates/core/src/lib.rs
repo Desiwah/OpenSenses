@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod ipc;
 pub mod models;
+pub mod procs;
 pub mod protocol;
 pub mod settings;
 
@@ -231,8 +232,7 @@ mod tests {
     #[test]
     fn drift_detects_reset_colours() {
         let s = Settings::default();
-        let mut seen = Observed::default();
-        seen.zones = Some([Rgb { r: 0xFF, g: 0xA0, b: 0 }; 4]);
+        let mut seen = Observed { zones: Some([Rgb { r: 0xFF, g: 0xA0, b: 0 }; 4]), ..Default::default() };
         assert!(drifted(&s, &seen, Some(0)));
         seen.zones = Some(s.lighting.zones);
         seen.fans = vec![(Fan::Cpu, FanMode::Auto), (Fan::Gpu, FanMode::Auto)];
