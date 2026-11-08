@@ -1,6 +1,6 @@
 {
   "bundle": {
-    "targets": ["deb", "appimage"],
+    "targets": ["deb", "rpm", "appimage"],
     "resources": { "bin/opensenses-service": "opensenses-service" }
   }
 }
