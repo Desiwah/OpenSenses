@@ -133,7 +133,7 @@ input[type="range"] { width: 100%; accent-color: var(--focus); }
 .fan[data-off="true"] .custom { opacity: .5; }
 
 /* GPU levels */
-.levels { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.levels { display: grid; gap: 14px; }
 .level {
   text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-m);
   padding: 18px 20px; cursor: pointer;
@@ -141,7 +141,7 @@ input[type="range"] { width: 100%; accent-color: var(--focus); }
 .level[aria-checked="true"] { border-color: var(--focus); background: var(--raised); }
 .level h3 { font: 400 22px var(--display); margin: 0 0 10px; }
 .level dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; color: var(--muted); }
-.level dd { margin: 0; color: var(--text); font-family: var(--display); }
+.level dd { margin: 0; color: var(--text); font-family: var(--display); white-space: nowrap; }
 
 /* Monitor */
 .gauges { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
@@ -171,6 +171,11 @@ input[type="range"] { width: 100%; accent-color: var(--focus); }
 .sw input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 2px; }
 .sw input:disabled + span { opacity: .4; }
 .unit-field { margin-top: 26px; }
+.about { margin-top: 28px; color: var(--muted); font-size: 13px; }
+.about p { margin: 0 0 4px; }
+.note { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 18px 20px; max-width: 640px; }
+.note h2 { font: 400 20px var(--display); margin: 0 0 6px; }
+.note p { margin: 0; color: var(--muted); }
 
 /* Status bar */
 .status {

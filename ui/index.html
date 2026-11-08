@@ -23,6 +23,10 @@
     <main>
       <!-- Lighting -->
       <section class="page" id="page-lighting">
+        <div class="note" id="perKeyNote" hidden>
+          <h2>Per-key keyboard</h2>
+          <p>This laptop has a per-key RGB keyboard, which has its own controller. Support for it is planned for a later update.</p>
+        </div>
         <div class="stage">
           <svg id="keyboard" viewBox="0 0 1000 330" role="img" aria-label="Keyboard preview"></svg>
           <div class="zone-pills" id="zonePills"></div>
@@ -91,7 +95,7 @@
       <section class="page" id="page-gpu" hidden>
         <header class="page-head">
           <h1>GPU overclock</h1>
-          <p>The same three levels PredatorSense offered for the RTX 2070 Max-Q. NVIDIA's driver forgets overclocks on restart, so with “Keep settings applied” on, OpenSenses sets your level again each time.</p>
+          <p id="gpuIntro"></p>
         </header>
         <div class="levels" id="gpuLevels" role="radiogroup" aria-label="GPU level"></div>
       </section>
@@ -114,6 +118,10 @@
         <div class="field unit-field">
           <h2>Temperature unit</h2>
           <div class="seg small" id="unit" role="radiogroup" aria-label="Temperature unit"></div>
+        </div>
+        <div class="about">
+          <p id="modelLine"></p>
+          <p id="coming" hidden>Planned for this model: <span id="comingList"></span></p>
         </div>
       </section>
     </main>

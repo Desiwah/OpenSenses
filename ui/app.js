@@ -7,6 +7,25 @@ const invoke = tauri ? tauri.core.invoke : mockInvoke;
 
 // Lets the page run in a normal browser for design work.
 let mock = null;
+function mockCaps() {
+  const q = new URLSearchParams(location.search).get("model") || "PH317-53";
+  const lv = (mode, core_mhz, memory_mhz) => ({ mode, core_mhz, memory_mhz });
+  const base = {
+    product: `Predator ${q}`, model_name: "Predator Helios 300", known_model: true, lighting: true, per_key: false,
+    fans: ["cpu", "gpu"], sensors: true, sticky_keys: true, coming: [],
+    gpu_levels: [lv("normal", 0, 0), lv("faster", 100, 160), lv("turbo", 160, 320)],
+    toggles: ["backlight_timeout", "lcd_overdrive", "win_key", "boot_animation"],
+  };
+  if (q === "PT515-51") Object.assign(base, { model_name: "Predator Triton 500", fans: ["cpu", "gpu", "gpu2"],
+    gpu_levels: [lv("normal", 0, 120), lv("faster", 75, 200), lv("turbo", 100, 270)],
+    toggles: ["backlight_timeout", "lcd_overdrive", "discrete_gpu", "win_key", "boot_animation"] });
+  if (q === "PH717-71") Object.assign(base, { model_name: "Predator Helios 700", lighting: false, per_key: true,
+    gpu_levels: [lv("normal", 0, 0), lv("faster", 60, 133), lv("boosted", 60, 266), lv("turbo", 100, 400)],
+    toggles: ["boot_animation"], coming: ["Per-key keyboard lighting", "CPU overclocking", "Programmable hotkeys"] });
+  if (q === "unknown") Object.assign(base, { product: "Nitro AN515-55", model_name: "Nitro 5", known_model: false,
+    gpu_levels: [], toggles: ["backlight_timeout", "boot_animation"] });
+  return base;
+}
 function mockInvoke(cmd, args) {
   if (!mock) {
     const teal = { r: 0, g: 174, b: 199 };
@@ -17,11 +36,12 @@ function mockInvoke(cmd, args) {
         fans: { mode: "auto", cpu_percent: 50, gpu_percent: 50 },
         gpu: "normal", keep_applied: true,
       },
-      sensors: {}, capabilities: { lighting: true, fans: true, gpu_modes: true, sensors: true },
+      sensors: {}, capabilities: mockCaps(),
       backend: "preview", errors: [], overheat_guard: false,
-      toggles_now: { lcd_overdrive: false, boot_animation: false, backlight_timeout: true, win_key: true },
+      toggles_now: { lcd_overdrive: false, boot_animation: false, backlight_timeout: true, win_key: true, discrete_gpu: false },
     };
-    mock.settings.toggles = { lcd_overdrive: null, boot_animation: null, backlight_timeout: null, win_key: null };
+    mock.settings.toggles = { lcd_overdrive: null, boot_animation: null, backlight_timeout: null, win_key: null, discrete_gpu: null };
+    mock.settings.fans.gpu2_percent = 50;
     mock.settings.fahrenheit = false;
     mock.sticky = false;
   }
@@ -63,11 +83,10 @@ const EFFECTS = [
 const BRIGHTNESS = [[0, "Off"], [25, "25%"], [50, "50%"], [75, "75%"], [100, "100%"]];
 const DIRECTIONS = [["right_to_left", "Right to left"], ["left_to_right", "Left to right"]];
 const FAN_MODES = [["auto", "Auto"], ["max", "Max"], ["custom", "Custom"]];
-const GPU_LEVELS = [
-  ["normal", "Normal", "Stock clocks", "+0 MHz", "+0 MHz"],
-  ["faster", "Faster", "A mild overclock", "+100 MHz", "+160 MHz"],
-  ["turbo", "Turbo", "The highest preset", "+160 MHz", "+320 MHz"],
-];
+const GPU_LEVEL_NAMES = { normal: "Normal", faster: "Faster", boosted: "Boosted", turbo: "Turbo" };
+const GPU_LEVEL_HINTS = { normal: "Stock clocks", faster: "A mild overclock", boosted: "A stronger overclock", turbo: "The highest preset" };
+const FAN_NAMES = { cpu: "CPU fan", gpu: "GPU fan", gpu2: "Second GPU fan" };
+const mhz = (v) => `${v >= 0 ? "+" : ""}${v} MHz`;
 
 const hex = (c) => "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
 const rgb = (h) => ({ r: parseInt(h.slice(1, 3), 16), g: parseInt(h.slice(3, 5), 16), b: parseInt(h.slice(5, 7), 16) });
@@ -438,6 +457,7 @@ const unitLabel = () => (settings && settings.fahrenheit ? "°F" : "°C");
 /* ---------- settings page ---------- */
 
 const TOGGLES = [
+  ["discrete_gpu", "Use only the NVIDIA GPU", "Turns off hybrid graphics for a little more performance and lower latency in games, at the cost of battery life. Takes effect after a restart."],
   ["backlight_timeout", "Turn keyboard lighting off when idle", "The lighting goes dark after 30 seconds without typing and comes back with the next key press."],
   ["lcd_overdrive", "LCD overdrive", "Makes the laptop screen respond faster, so fast motion in games looks less blurry."],
   ["win_key", "Windows and Menu keys", "Turn off to block both keys, so a stray press can't pull you out of a game."],
@@ -462,15 +482,16 @@ function switchRow(title, desc, checked, disabled, onChange) {
 function renderSettings() {
   const caps = (state && state.capabilities) || {};
   const now = (state && state.toggles_now) || {};
-  const rows = TOGGLES.map(([key, title, desc]) => {
+  const available = caps.toggles || [];
+  const rows = TOGGLES.filter(([key]) => available.includes(key)).map(([key, title, desc]) => {
     const chosen = settings.toggles ? settings.toggles[key] : null;
     // The backlight timeout can't be read back reliably; it's on from the factory.
     const fallback = key === "backlight_timeout" ? true : null;
     const value = chosen != null ? chosen : now[key] != null ? now[key] : fallback;
-    return switchRow(title, desc, value, caps.toggles === false,
+    return switchRow(title, desc, value, false,
       (on) => change((s) => { s.toggles = s.toggles || {}; s.toggles[key] = on; }));
   });
-  rows.push(switchRow("Sticky Keys",
+  if (caps.sticky_keys) rows.push(switchRow("Sticky Keys",
     "A Windows accessibility feature: Shift, Ctrl, Alt and the Windows key stay pressed until you press the next key. This is a setting of your Windows account.",
     stickyKeys, stickyKeys == null,
     async (on) => {
@@ -478,6 +499,13 @@ function renderSettings() {
       catch (e) { setStatus(String(e), true); }
     }));
   $("toggles").replaceChildren(...rows);
+  $("toggles").hidden = rows.length === 0;
+  const coming = caps.coming || [];
+  $("coming").hidden = coming.length === 0;
+  $("comingList").textContent = coming.join(", ") + ".";
+  $("modelLine").textContent = caps.product
+    ? `${caps.model_name ? caps.model_name + ", " : ""}${caps.product}${caps.known_model ? "" : " (features found by testing what this laptop answers to)"}`
+    : "";
   segmented($("unit"), [[false, "Celsius (°C)"], [true, "Fahrenheit (°F)"]], !!settings.fahrenheit,
     (v) => change((s) => (s.fahrenheit = v)));
 }
@@ -552,8 +580,9 @@ function renderLighting() {
 function renderFans() {
   const f = settings.fans;
   const caps = (state && state.capabilities) || {};
-  segmented($("fanModes"), FAN_MODES, f.mode, (v) => change((s) => (s.fans.mode = v)), caps.fans === false);
-  const cards = [["cpu", "CPU fan"], ["gpu", "GPU fan"]].map(([id, title]) => {
+  const fans = caps.fans || [];
+  segmented($("fanModes"), FAN_MODES, f.mode, (v) => change((s) => (s.fans.mode = v)), fans.length === 0);
+  const cards = fans.map((id) => [id, FAN_NAMES[id] || id]).map(([id, title]) => {
     const pct = f[`${id}_percent`];
     const c = document.createElement("div");
     c.className = "fan";
@@ -574,21 +603,23 @@ function renderFans() {
     return c;
   });
   $("fanCards").replaceChildren(...cards);
-  if (caps.fans === false) setStatus("Fan control isn't available on this system", true);
 }
 
 function renderGpu() {
   const caps = (state && state.capabilities) || {};
-  $("gpuLevels").replaceChildren(...GPU_LEVELS.map(([v, name, desc, core, mem]) => {
+  const levels = caps.gpu_levels || [];
+  $("gpuLevels").style.gridTemplateColumns = `repeat(${Math.max(levels.length, 1)}, 1fr)`;
+  $("gpuLevels").replaceChildren(...levels.map((l) => {
     const b = document.createElement("button");
     b.type = "button"; b.className = "level";
     b.setAttribute("role", "radio");
-    b.setAttribute("aria-checked", String(settings.gpu === v));
-    b.disabled = caps.gpu_modes === false;
-    b.innerHTML = `<h3>${name}</h3><dl><dt>Core clock</dt><dd>${core}</dd><dt>Memory clock</dt><dd>${mem}</dd></dl><p class="hint">${desc}</p>`;
-    b.onclick = () => change((s) => (s.gpu = v));
+    b.setAttribute("aria-checked", String(settings.gpu === l.mode));
+    b.innerHTML = `<h3>${GPU_LEVEL_NAMES[l.mode] || l.mode}</h3><dl><dt>Core clock</dt><dd>${mhz(l.core_mhz)}</dd><dt>Memory clock</dt><dd>${mhz(l.memory_mhz)}</dd></dl><p class="hint">${GPU_LEVEL_HINTS[l.mode] || ""}</p>`;
+    b.onclick = () => change((s) => (s.gpu = l.mode));
     return b;
   }));
+  const gpuName = caps.model_name ? `for this ${caps.model_name}` : "for this laptop";
+  $("gpuIntro").textContent = `The overclock levels PredatorSense offered ${gpuName}'s GPU. NVIDIA's driver forgets overclocks on restart, so with “Keep settings applied” on, OpenSenses sets your level again each time.`;
 }
 
 const GAUGES = [
@@ -646,8 +677,29 @@ function renderLive() {
   if (settings && settings.lighting.effect === "temperature") paint(0);
 }
 
+function renderSections() {
+  const caps = (state && state.capabilities) || {};
+  const show = {
+    lighting: caps.lighting || caps.per_key,
+    fans: (caps.fans || []).length > 0,
+    gpu: (caps.gpu_levels || []).length > 0,
+    monitor: caps.sensors !== false,
+  };
+  for (const [page, visible] of Object.entries(show)) {
+    document.querySelector(`.tab[data-page="${page}"]`).hidden = !visible;
+  }
+  $("perKeyNote").hidden = !(caps.per_key && !caps.lighting);
+  document.querySelectorAll("#page-lighting .stage, #page-lighting .controls").forEach((el) => (el.hidden = !caps.lighting));
+  const current = document.querySelector(".tab[aria-current=page]");
+  if (current && current.hidden) {
+    const first = [...document.querySelectorAll(".tab")].find((t) => !t.hidden);
+    if (first) first.click();
+  }
+}
+
 function renderAll() {
   if (!settings) return;
+  renderSections();
   renderLighting();
   renderFans();
   renderGpu();
