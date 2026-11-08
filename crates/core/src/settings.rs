@@ -179,6 +179,36 @@ impl Toggles {
     }
 }
 
+/// GameSync: settings used while a game is running, PredatorSense-style.
+/// Each part left as `None` keeps the everyday setting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GameProfile {
+    /// Program file name, e.g. "eldenring.exe" (case is ignored).
+    pub exe: String,
+    pub enabled: bool,
+    pub lighting: Option<Lighting>,
+    pub fans: Option<Fans>,
+    pub gpu: Option<GpuMode>,
+    /// Windows and Menu keys while playing (usually off).
+    pub win_key: Option<bool>,
+}
+
+impl Default for GameProfile {
+    fn default() -> Self {
+        Self { exe: String::new(), enabled: true, lighting: None, fans: None, gpu: None, win_key: None }
+    }
+}
+
+/// Most game profiles kept; more is almost certainly a misbehaving client.
+pub const MAX_GAMES: usize = 64;
+
+/// Lower-case file name of a program path, the form game profiles and
+/// running programs are compared in ("C:\\Games\\X.exe" -> "x.exe").
+pub fn exe_name(path: &str) -> String {
+    path.trim().rsplit(['\\', '/']).next().unwrap_or("").to_lowercase()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -191,6 +221,9 @@ pub struct Settings {
     /// Re-apply these settings at startup, after sleep and when something
     /// (e.g. a Windows update) resets them.
     pub keep_applied: bool,
+    /// Switch to a game's profile while it runs.
+    pub game_sync: bool,
+    pub games: Vec<GameProfile>,
 }
 
 impl Default for Settings {
@@ -202,6 +235,8 @@ impl Default for Settings {
             toggles: Toggles::default(),
             fahrenheit: false,
             keep_applied: true,
+            game_sync: true,
+            games: Vec::new(),
         }
     }
 }
@@ -210,14 +245,61 @@ impl Settings {
     /// Brings every value into the range the firmware accepts. The service
     /// runs with full rights, so it never trusts what a client sends.
     pub fn sanitized(mut self) -> Self {
-        let l = &mut self.lighting;
-        l.speed = l.speed.clamp(1, 9);
-        l.brightness = l.brightness.min(100);
-        self.fans.cpu_percent = self.fans.cpu_percent.map(|p| p.min(100));
-        self.fans.gpu_percent = self.fans.gpu_percent.map(|p| p.min(100));
-        self.fans.gpu2_percent = self.fans.gpu2_percent.map(|p| p.min(100));
+        sanitize_lighting(&mut self.lighting);
+        sanitize_fans(&mut self.fans);
+        self.games.truncate(MAX_GAMES);
+        for g in &mut self.games {
+            g.exe = exe_name(&g.exe).chars().take(260).collect();
+            if let Some(l) = g.lighting.as_mut() {
+                sanitize_lighting(l);
+            }
+            if let Some(f) = g.fans.as_mut() {
+                sanitize_fans(f);
+            }
+        }
+        self.games.retain(|g| !g.exe.is_empty());
         self
     }
+
+    /// The first enabled game profile whose program is running.
+    /// `running` holds lower-case program file names.
+    pub fn active_game(&self, running: &std::collections::HashSet<String>) -> Option<usize> {
+        if !self.game_sync {
+            return None;
+        }
+        self.games.iter().position(|g| g.enabled && running.contains(&g.exe))
+    }
+
+    /// These settings with game profile `i` laid over them.
+    pub fn with_game(&self, i: usize) -> Settings {
+        let mut s = self.clone();
+        if let Some(g) = self.games.get(i) {
+            if let Some(l) = &g.lighting {
+                s.lighting = l.clone();
+            }
+            if let Some(f) = &g.fans {
+                s.fans = f.clone();
+            }
+            if let Some(m) = g.gpu {
+                s.gpu = m;
+            }
+            if g.win_key.is_some() {
+                s.toggles.win_key = g.win_key;
+            }
+        }
+        s
+    }
+}
+
+fn sanitize_lighting(l: &mut Lighting) {
+    l.speed = l.speed.clamp(1, 9);
+    l.brightness = l.brightness.min(100);
+}
+
+fn sanitize_fans(f: &mut Fans) {
+    f.cpu_percent = f.cpu_percent.map(|p| p.min(100));
+    f.gpu_percent = f.gpu_percent.map(|p| p.min(100));
+    f.gpu2_percent = f.gpu2_percent.map(|p| p.min(100));
 }
 
 pub fn settings_path() -> PathBuf {
@@ -249,4 +331,28 @@ pub fn save(s: &Settings) -> anyhow::Result<()> {
     std::fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
     std::fs::rename(tmp, p)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_profiles() {
+        assert_eq!(exe_name(r"C:\Games\Elden Ring\eldenring.EXE"), "eldenring.exe");
+        assert_eq!(exe_name("/home/u/.steam/game.x86_64"), "game.x86_64");
+        let mut s = Settings::default();
+        s.games.push(GameProfile { exe: r"D:\x\Game.exe".into(), gpu: Some(GpuMode::Turbo), win_key: Some(false), ..Default::default() });
+        s.games.push(GameProfile { exe: "  ".into(), ..Default::default() });
+        let s = s.sanitized();
+        assert_eq!(s.games.len(), 1);
+        assert_eq!(s.games[0].exe, "game.exe");
+        let running: std::collections::HashSet<String> = ["explorer.exe", "game.exe"].iter().map(|x| x.to_string()).collect();
+        let i = s.active_game(&running).unwrap();
+        let g = s.with_game(i);
+        assert_eq!((g.gpu, g.toggles.win_key, &g.lighting), (GpuMode::Turbo, Some(false), &s.lighting));
+        let mut off = s.clone();
+        off.game_sync = false;
+        assert_eq!(off.active_game(&running), None);
+    }
 }
