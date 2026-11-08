@@ -14,6 +14,7 @@ const ID_INITIALIZE: u32 = 0x0150_E828;
 const ID_ENUM_PHYSICAL_GPUS: u32 = 0xE5AC_921F;
 const ID_GET_PSTATES20: u32 = 0x6FF8_1213;
 const ID_SET_PSTATES20: u32 = 0x0F4D_AE6B;
+const ID_GET_PCI_IDENTIFIERS: u32 = 0x2DDF_B66E;
 
 const SIZE: usize = 7416;
 const VERSION: u32 = SIZE as u32 | (2 << 16);
@@ -28,11 +29,13 @@ type QueryInterface = unsafe extern "C" fn(u32) -> *const c_void;
 type Initialize = unsafe extern "C" fn() -> i32;
 type EnumGpus = unsafe extern "C" fn(*mut *mut c_void, *mut u32) -> i32;
 type Pstates20 = unsafe extern "C" fn(*mut c_void, *mut u8) -> i32;
+type PciIds = unsafe extern "C" fn(*mut c_void, *mut u32, *mut u32, *mut u32, *mut u32) -> i32;
 
 pub struct Nvapi {
     gpu: *mut c_void,
     get: Pstates20,
     set: Pstates20,
+    pci: Option<PciIds>,
 }
 
 fn put(buf: &mut [u8], at: usize, v: u32) {
@@ -61,6 +64,7 @@ impl Nvapi {
             let enumerate: EnumGpus = std::mem::transmute(f(ID_ENUM_PHYSICAL_GPUS)?);
             let get: Pstates20 = std::mem::transmute(f(ID_GET_PSTATES20)?);
             let set: Pstates20 = std::mem::transmute(f(ID_SET_PSTATES20)?);
+            let pci: Option<PciIds> = f(ID_GET_PCI_IDENTIFIERS).ok().map(|p| std::mem::transmute(p));
             let st = init();
             if st != 0 {
                 bail!("NvAPI_Initialize failed ({st})");
@@ -71,8 +75,21 @@ impl Nvapi {
             if st != 0 || n == 0 {
                 bail!("no NVIDIA GPU found ({st})");
             }
-            Ok(Self { gpu: gpus[0], get, set })
+            Ok(Self { gpu: gpus[0], get, set, pci })
         }
+    }
+
+    /// PCI device id (e.g. 0x1F10) and subsystem id (e.g. 0x13421025),
+    /// the key PredatorSense used for its per-GPU overclock numbers.
+    pub fn pci_ids(&self) -> Result<(u16, u32)> {
+        let f = self.pci.ok_or_else(|| anyhow!("NvAPI_GPU_GetPCIIdentifiers missing"))?;
+        let (mut dev, mut sub, mut rev, mut ext) = (0u32, 0u32, 0u32, 0u32);
+        let st = unsafe { f(self.gpu, &mut dev, &mut sub, &mut rev, &mut ext) };
+        if st != 0 {
+            bail!("reading GPU ids failed ({st})");
+        }
+        // NVAPI reports the device id as (device << 16) | vendor.
+        Ok(((dev >> 16) as u16, sub))
     }
 
     /// Current P0 offset of one clock domain, in MHz.
