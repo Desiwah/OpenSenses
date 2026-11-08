@@ -17,8 +17,8 @@ pub fn running() -> HashSet<String> {
     list(false).into_iter().map(|a| a.name).collect()
 }
 
-/// Programs running in the signed-in user's session, sorted, for the app's
-/// "pick a running game" list.
+/// Programs with a window open in the signed-in user's session (what Task
+/// Manager calls apps), sorted, for the app's "pick a running game" list.
 pub fn user_apps() -> Vec<App> {
     let mut by_name: BTreeMap<String, Option<String>> = BTreeMap::new();
     for a in list(true) {
@@ -66,6 +66,7 @@ fn list(this_session_only: bool) -> Vec<App> {
         }
     };
 
+    let windowed = if this_session_only { windowed_pids() } else { HashSet::new() };
     let mut out = Vec::new();
     unsafe {
         let mine = {
@@ -79,7 +80,7 @@ fn list(this_session_only: bool) -> Vec<App> {
         while ok {
             let keep = !this_session_only || {
                 let mut s = u32::MAX;
-                ProcessIdToSessionId(e.th32ProcessID, &mut s).is_ok() && s == mine
+                ProcessIdToSessionId(e.th32ProcessID, &mut s).is_ok() && s == mine && windowed.contains(&e.th32ProcessID)
             };
             if keep {
                 let len = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
@@ -94,6 +95,85 @@ fn list(this_session_only: bool) -> Vec<App> {
         let _ = CloseHandle(snap);
     }
     out
+}
+
+/// Processes that own a visible, titled top-level window.
+#[cfg(windows)]
+fn windowed_pids() -> HashSet<u32> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowThreadProcessId, IsWindowVisible, GW_OWNER,
+    };
+
+    unsafe extern "system" fn each(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let set = &mut *(lp.0 as *mut HashSet<u32>);
+        let owned = GetWindow(hwnd, GW_OWNER).map(|h| !h.is_invalid()).unwrap_or(false);
+        if IsWindowVisible(hwnd).as_bool() && !owned && GetWindowTextLengthW(hwnd) > 0 {
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            set.insert(pid);
+        }
+        BOOL(1)
+    }
+
+    let mut set = HashSet::new();
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut set as *mut _ as isize));
+    }
+    set
+}
+
+/// Looks for where a program lives from Windows' own records of programs
+/// that have been run (the shell's MuiCache and the Program Compatibility
+/// Assistant), for games added by name. Only paths that still exist count;
+/// when several copies exist, the most recently updated one wins.
+#[cfg(windows)]
+pub fn find_program(exe: &str) -> Option<String> {
+    use windows::core::{HSTRING, PWSTR};
+    use windows::Win32::System::Registry::{RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ};
+
+    let want = crate::settings::exe_name(exe);
+    const KEYS: &[&str] = &[
+        r"Software\Classes\Local Settings\Software\Microsoft\Windows\Shell\MuiCache",
+        r"Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store",
+    ];
+    let mut hits: Vec<(std::time::SystemTime, String)> = Vec::new();
+    for key in KEYS {
+        unsafe {
+            let mut h = HKEY::default();
+            if RegOpenKeyExW(HKEY_CURRENT_USER, &HSTRING::from(*key), 0, KEY_READ, &mut h).is_err() {
+                continue;
+            }
+            for i in 0.. {
+                let mut buf = [0u16; 2048];
+                let mut len = buf.len() as u32;
+                if RegEnumValueW(h, i, PWSTR(buf.as_mut_ptr()), &mut len, None, None, None, None).is_err() {
+                    break;
+                }
+                let name = String::from_utf16_lossy(&buf[..len as usize]);
+                // MuiCache names look like "C:\\Games\\X.exe.FriendlyAppName".
+                let path = match name.to_ascii_lowercase().rfind(".exe") {
+                    Some(at) => &name[..at + 4],
+                    None => continue,
+                };
+                if crate::settings::exe_name(path) != want || hits.iter().any(|(_, p)| p.eq_ignore_ascii_case(path)) {
+                    continue;
+                }
+                if let Ok(m) = std::fs::metadata(path) {
+                    if m.is_file() {
+                        hits.push((m.modified().unwrap_or(std::time::UNIX_EPOCH), path.to_string()));
+                    }
+                }
+            }
+            let _ = RegCloseKey(h);
+        }
+    }
+    hits.into_iter().max_by_key(|(t, _)| *t).map(|(_, p)| p)
+}
+
+#[cfg(not(windows))]
+pub fn find_program(_exe: &str) -> Option<String> {
+    None
 }
 
 #[cfg(unix)]
