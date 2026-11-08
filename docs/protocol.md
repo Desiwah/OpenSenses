@@ -26,6 +26,42 @@ OpenSenses keeps the same per-model data in `crates/core/src/models.rs`,
 looked up by the BIOS product name. On a model that isn't listed it probes
 instead: each `Get…` call that returns status 0 turns the matching feature on.
 
+## Method ids and Linux
+
+The class descriptions the firmware ships (read on the PH317-53, version 2.63)
+number the methods. Windows calls them by name; Linux calls them by these
+numbers through the OpenSenses driver (`driver/opensenses.c`), with the input
+laid out as the class declares it (uint32: 4 bytes, uint64: 8 bytes, the
+keyboard effect: 16 bytes, all little-endian).
+
+`AcerGamingFunction`, GUID `7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56`:
+
+| Id | Method | Id | Method |
+| -- | ------ | -- | ------ |
+| 1 | SetGamingProfile | 13 | GetGamingLEDColor |
+| 2 | SetGamingLED | 14 | SetGamingFanBehavior |
+| 3 | GetGamingProfile | 15 | GetGamingFanBehavior |
+| 4 | GetGamingLED | 16 | SetGamingFanSpeed |
+| 5 | GetGamingSysInfo | 17 | GetGamingFanSpeed |
+| 6 | SetGamingRgbKb | 18 | SetGamingFanTable |
+| 7 | GetGamingRgbKb | 19 | GetGamingFanTable |
+| 8 | SetGamingProfileSetting | 20 | SetGamingKBBacklight |
+| 9 | GetGamingProfileSetting | 21 | GetGamingKBBacklight |
+| 10 | SetGamingLEDBehavior | 22 | SetGamingMiscSetting |
+| 11 | GetGamingLEDBehavior | 23 | GetGamingMiscSetting |
+| 12 | SetGamingLEDColor | | |
+
+`APGeAction`, GUID `61EF69EA-865C-4BC3-A502-A0DEBA0CB531`: 1 `SetFunction`,
+2 `GetFunction`.
+
+The driver creates `/dev/opensenses` (root only) with one ioctl,
+`_IOWR('O', 1, struct opensenses_call)`, that calls one of these methods and
+returns its integer or buffer result. The in-tree `acer-wmi` driver calls some
+of the same methods without binding these WMI devices, so both can be loaded.
+
+On Linux, NVML counts memory clock offsets in transfer rate, twice what NVAPI
+uses, so OpenSenses doubles the memory offset there.
+
 ## Keyboard lighting
 
 **Effects** use `SetGamingKBBacklight`, which takes a 16-byte array:
