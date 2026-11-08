@@ -33,6 +33,7 @@ pub struct State {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // one reply per request; boxing buys nothing
 pub enum Response {
     State(State),
     Error(String),

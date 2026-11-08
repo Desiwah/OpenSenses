@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod ipc;
+pub mod models;
 pub mod protocol;
 pub mod settings;
 
@@ -46,9 +47,10 @@ pub fn apply_changes(hw: &mut dyn Backend, old: Option<&Settings>, s: &Settings)
         }
     }
 
-    if caps.fans && fans_changed {
+    if !caps.fans.is_empty() && fans_changed {
         let f = &s.fans;
-        for (fan, pct) in [(protocol::FAN_CPU, f.cpu_percent), (protocol::FAN_GPU, f.gpu_percent)] {
+        for fan in caps.fans.iter().copied() {
+            let pct = f.percent(fan);
             match f.mode {
                 FanMode::Auto | FanMode::Max => note("fan mode", hw.set_fan_mode(fan, f.mode)),
                 FanMode::Custom => match pct {
@@ -62,15 +64,15 @@ pub fn apply_changes(hw: &mut dyn Backend, old: Option<&Settings>, s: &Settings)
         }
     }
 
-    if caps.gpu_modes && gpu_changed {
+    if caps.gpu_level(s.gpu).is_some() && gpu_changed {
         note("GPU mode", hw.set_gpu(s.gpu));
         // Some models (the PH317-53 included) have no turbo LED and reject
         // the call, so it is best-effort and never reported as an error.
         let _ = hw.set_turbo_led(s.gpu == GpuMode::Turbo);
     }
 
-    if caps.toggles {
-        for t in Toggle::ALL {
+    {
+        for t in caps.toggles.iter().copied() {
             let changed = old.map(|o| o.toggles.get(t) != s.toggles.get(t)).unwrap_or(true);
             if let (Some(on), true) = (s.toggles.get(t), changed) {
                 note("setting", hw.set_toggle(t, on));
@@ -80,18 +82,9 @@ pub fn apply_changes(hw: &mut dyn Backend, old: Option<&Settings>, s: &Settings)
     errors
 }
 
-/// Fan modes the firmware should report for these settings.
-pub fn expected_fans(s: &Settings) -> (FanMode, FanMode) {
-    let f = &s.fans;
-    let one = |p: Option<u8>| match f.mode {
-        FanMode::Custom if p.is_none() => FanMode::Auto,
-        m => m,
-    };
-    (one(f.cpu_percent), one(f.gpu_percent))
-}
-
 /// True when what the firmware reports no longer matches the settings.
-pub fn drifted(s: &Settings, seen: &Observed) -> bool {
+/// `gpu_core` is the core offset the chosen GPU level should have.
+pub fn drifted(s: &Settings, seen: &Observed, gpu_core: Option<i32>) -> bool {
     if s.lighting.effect == Effect::Static {
         if let Some(z) = seen.zones {
             for (i, seen_colour) in z.iter().enumerate() {
@@ -102,11 +95,8 @@ pub fn drifted(s: &Settings, seen: &Observed) -> bool {
             }
         }
     }
-    let (cpu, gpu) = expected_fans(s);
-    if let (Some(c), Some(g)) = seen.fans {
-        if c != cpu || g != gpu {
-            return true;
-        }
+    if seen.fans.iter().any(|&(fan, mode)| mode != s.fans.expected(fan)) {
+        return true;
     }
     if let Some(g) = seen.gpu {
         if g != s.gpu {
@@ -122,8 +112,8 @@ pub fn drifted(s: &Settings, seen: &Observed) -> bool {
     }
     // A driver update or reinstall drops clock offsets without touching
     // the firmware value.
-    if let Some(core) = seen.gpu_core_offset {
-        if core != protocol::gpu_offsets(s.gpu).0 {
+    if let (Some(have), Some(want)) = (seen.gpu_core_offset, gpu_core) {
+        if have != want {
             return true;
         }
     }
@@ -159,6 +149,7 @@ pub fn temperature_colour(celsius: u32) -> Rgb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use settings::Fan;
 
     #[test]
     fn temperature_colour_ends() {
@@ -177,7 +168,16 @@ mod tests {
             "test"
         }
         fn capabilities(&self) -> backend::Capabilities {
-            backend::Capabilities { lighting: true, fans: true, gpu_modes: true, sensors: true, toggles: true }
+            backend::Capabilities {
+                lighting: true,
+                fans: vec![Fan::Cpu, Fan::Gpu],
+                gpu_levels: vec![
+                    backend::GpuLevel { mode: GpuMode::Normal, core_mhz: 0, memory_mhz: 0 },
+                    backend::GpuLevel { mode: GpuMode::Turbo, core_mhz: 160, memory_mhz: 320 },
+                ],
+                toggles: Toggle::ALL.to_vec(),
+                ..Default::default()
+            }
         }
         fn sensors(&mut self) -> backend::Sensors {
             Default::default()
@@ -190,11 +190,11 @@ mod tests {
             self.calls.push("zone");
             Ok(())
         }
-        fn set_fan_mode(&mut self, _: u64, _: FanMode) -> anyhow::Result<()> {
+        fn set_fan_mode(&mut self, _: Fan, _: FanMode) -> anyhow::Result<()> {
             self.calls.push("fan");
             Ok(())
         }
-        fn set_fan_speed(&mut self, _: u64, _: u8) -> anyhow::Result<()> {
+        fn set_fan_speed(&mut self, _: Fan, _: u8) -> anyhow::Result<()> {
             self.calls.push("fan");
             Ok(())
         }
@@ -233,10 +233,13 @@ mod tests {
         let s = Settings::default();
         let mut seen = Observed::default();
         seen.zones = Some([Rgb { r: 0xFF, g: 0xA0, b: 0 }; 4]);
-        assert!(drifted(&s, &seen));
+        assert!(drifted(&s, &seen, Some(0)));
         seen.zones = Some(s.lighting.zones);
-        seen.fans = (Some(FanMode::Auto), Some(FanMode::Auto));
+        seen.fans = vec![(Fan::Cpu, FanMode::Auto), (Fan::Gpu, FanMode::Auto)];
         seen.gpu = Some(GpuMode::Normal);
-        assert!(!drifted(&s, &seen));
+        seen.gpu_core_offset = Some(0);
+        assert!(!drifted(&s, &seen, Some(0)));
+        // a driver update dropped a +100 MHz overclock
+        assert!(drifted(&s, &seen, Some(100)));
     }
 }
