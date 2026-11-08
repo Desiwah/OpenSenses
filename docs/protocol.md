@@ -22,6 +22,10 @@ PredatorSense picks its screens from `C:\ProgramData\oem\PredatorSense\Feature.i
 The PH317-53 uses `MachineType=1`: a 4-zone RGB keyboard, a CPU fan and a GPU
 fan, GPU overclocking and no CPU overclocking.
 
+OpenSenses keeps the same per-model data in `crates/core/src/models.rs`,
+looked up by the BIOS product name. On a model that isn't listed it probes
+instead: each `Get…` call that returns status 0 turns the matching feature on.
+
 ## Keyboard lighting
 
 **Effects** use `SetGamingKBBacklight`, which takes a 16-byte array:
@@ -47,12 +51,13 @@ zones as the CPU temperature changes.
 ## Fans
 
 `SetGamingFanBehavior` (uint64): fan bits in the low 16 bits (CPU `0x1`,
-GPU `0x8`), then a 2-bit mode per fan, CPU at bit 16 and GPU at bit 22.
+GPU `0x8`, second GPU fan `0x10` on the Triton 500), then a 2-bit mode per
+fan, CPU at bit 16, GPU at bit 22 and the second GPU fan at bit 24.
 Modes: 1 auto, 2 max, 3 custom. Examples: both auto `0x410009`, both max
 `0x820009`, CPU custom `0x30001`, GPU custom `0xC00008`.
 
 `SetGamingFanSpeed` (uint64): `fan_id | percent << 8`, fan id 1 for the CPU
-fan and 4 for the GPU fan, 0 to 100 percent. Only has an effect in custom
+fan, 4 for the GPU fan and 5 for the second GPU fan, 0 to 100 percent. Only has an effect in custom
 mode.
 
 `GetGamingFanBehavior(0x9)` returns the CPU mode in bits 8–9 and the GPU mode
@@ -75,13 +80,16 @@ in bits 14–15. `GetGamingFanSpeed(1 or 4)` returns the set percentage in bits
 
 PredatorSense does two things for its Normal / Faster / Turbo levels:
 
-1. Tells the firmware the level with `SetGamingMiscSetting(0x05 | level << 8)`.
-   OpenSenses uses levels 0, 1 and 2, as the Linux driver does for normal and
-   turbo. The firmware stores whatever value it is given (read back with
-   `GetGamingMiscSetting(5)`).
-2. Applies clock offsets through NVIDIA's driver API (NVAPI pstates20, P0):
-   Faster is +100 MHz core and +160 MHz memory, Turbo is +160 MHz core and
-   +320 MHz memory (from PredatorSense's settings for this model's GPUs).
+1. Tells the firmware the level with `SetGamingMiscSetting(0x05 | level << 8)`,
+   where `level` is the position in that model's list (0 Normal, 1 Faster,
+   2 Turbo; the Helios 700 has a fourth, Boosted, before Turbo). The firmware
+   stores whatever value it is given (read back with `GetGamingMiscSetting(5)`).
+   Triton 500 and Helios 500 skip this step.
+2. Applies clock offsets through NVIDIA's driver API (NVAPI pstates20, P0).
+   The offsets depend on the GPU, identified by its PCI device and subsystem
+   ids: on the PH317-53's RTX 2070 Max-Q (`DEV_1F10&SUBSYS_13421025`) Faster
+   is +100 MHz core and +160 MHz memory, Turbo +160 and +320. The tables for
+   every model are in `models.rs`.
 
 NVIDIA's driver drops offsets on restart and on driver updates, so the
 service sets them again.
@@ -100,14 +108,24 @@ not `SetGamingLEDBehavior`, which rejects these values.)
 | LCD overdrive | `SetGamingProfile(0x10 \| on << 48)` | `GetGamingProfile(0)`, bits 48–55 |
 | Windows and Menu keys | `SetGamingProfile(0x2 \| on << 24)` | `GetGamingProfile(0)`, bits 24–31 |
 | Boot animation and sound | `SetGamingMiscSetting(0x6 \| on << 8)` | `GetGamingMiscSetting(6)`, bits 8–15 |
-| Keyboard backlight off after 30 s | `APGeAction.SetFunction(0x6400088402 \| 30 << 40)` for on, without the `30 << 40` for off | not reliable, see below |
+| Keyboard backlight off after 30 s | `APGeAction.SetFunction`, see below | `APGeAction.GetFunction(0x88401)`, bits 40–47 (30 = on, 0 = off) |
 
 The backlight timeout lives in a second WMI class, `APGeAction`
 (`SetFunction` / `GetFunction`, parameters `uiInput` / `uiOutput`). In the
-input, 0x84 is the backlight hotkey number on these models, byte 4 the
-backlight brightness and byte 5 the timeout in seconds. `GetFunction(0x88401)`
-reports `0x1E0000080000` with the timeout on, but on the PH317-53 it didn't
-change after switching the timeout off, so OpenSenses doesn't rely on it.
+input `0x88402 | byte4 << 32 | seconds << 40`, 0x84 is the backlight hotkey
+number on these models and `seconds` is 30 (on) or 0 (off). Two quirks, seen on
+the PH317-53 and matching what PredatorSense does: the call is only accepted
+when byte 4 equals byte 4 of the value `GetFunction(0x88401)` just returned, and
+an accepted call flips the setting. So read first, send only when the state
+needs to change, and copy byte 4 across. Readings seen: `0x1E0000080000` on,
+`0x6400000000` off.
+
+The firmware does the dimming itself. PredatorSense's agent only listens to
+the `APGeEvent` WMI event (`EventDetail[0] == 1`) to record the current state.
+
+On the Triton 500, `SetGamingMiscSetting(0x2 | mode << 8)` switches between
+hybrid graphics (1) and the NVIDIA GPU only (2); it takes effect after a
+restart. Read with `GetGamingMiscSetting(2)`.
 
 Sticky Keys is a Windows accessibility setting of the signed-in user
 (`SystemParametersInfo` with `SPI_SETSTICKYKEYS`), so the app sets it
