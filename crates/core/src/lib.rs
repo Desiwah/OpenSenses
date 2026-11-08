@@ -6,6 +6,7 @@ pub mod models;
 pub mod procs;
 pub mod protocol;
 pub mod settings;
+pub mod snapshot;
 
 use backend::{Backend, Observed};
 use settings::{Effect, FanMode, GpuMode, Rgb, Settings, Toggle};
