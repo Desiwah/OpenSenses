@@ -138,11 +138,31 @@ pub enum Toggle {
     WinKey,
     /// Discrete GPU only (on) or hybrid graphics (off); needs a restart.
     DiscreteGpu,
+    /// Fans run faster in Auto mode.
+    CoolBoost,
 }
 
 impl Toggle {
-    pub const ALL: [Toggle; 5] =
-        [Toggle::LcdOverdrive, Toggle::BootAnimation, Toggle::BacklightTimeout, Toggle::WinKey, Toggle::DiscreteGpu];
+    /// Name used in settings files and by the app.
+    pub fn key(self) -> &'static str {
+        match self {
+            Toggle::LcdOverdrive => "lcd_overdrive",
+            Toggle::BootAnimation => "boot_animation",
+            Toggle::BacklightTimeout => "backlight_timeout",
+            Toggle::WinKey => "win_key",
+            Toggle::DiscreteGpu => "discrete_gpu",
+            Toggle::CoolBoost => "cool_boost",
+        }
+    }
+
+    pub const ALL: [Toggle; 6] = [
+        Toggle::LcdOverdrive,
+        Toggle::BootAnimation,
+        Toggle::BacklightTimeout,
+        Toggle::WinKey,
+        Toggle::DiscreteGpu,
+        Toggle::CoolBoost,
+    ];
 }
 
 /// `None` means "leave it as the laptop has it": nothing is changed until
@@ -155,6 +175,7 @@ pub struct Toggles {
     pub backlight_timeout: Option<bool>,
     pub win_key: Option<bool>,
     pub discrete_gpu: Option<bool>,
+    pub cool_boost: Option<bool>,
 }
 
 impl Toggles {
@@ -165,6 +186,7 @@ impl Toggles {
             Toggle::BacklightTimeout => self.backlight_timeout,
             Toggle::WinKey => self.win_key,
             Toggle::DiscreteGpu => self.discrete_gpu,
+            Toggle::CoolBoost => self.cool_boost,
         }
     }
 
@@ -175,6 +197,7 @@ impl Toggles {
             Toggle::BacklightTimeout => self.backlight_timeout = v,
             Toggle::WinKey => self.win_key = v,
             Toggle::DiscreteGpu => self.discrete_gpu = v,
+            Toggle::CoolBoost => self.cool_boost = v,
         }
     }
 }
@@ -186,6 +209,8 @@ impl Toggles {
 pub struct GameProfile {
     /// Program file name, e.g. "eldenring.exe" (case is ignored).
     pub exe: String,
+    /// Full path of the game's program when known, for showing its icon.
+    pub path: Option<String>,
     pub enabled: bool,
     pub lighting: Option<Lighting>,
     pub fans: Option<Fans>,
@@ -196,7 +221,7 @@ pub struct GameProfile {
 
 impl Default for GameProfile {
     fn default() -> Self {
-        Self { exe: String::new(), enabled: true, lighting: None, fans: None, gpu: None, win_key: None }
+        Self { exe: String::new(), path: None, enabled: true, lighting: None, fans: None, gpu: None, win_key: None }
     }
 }
 
@@ -250,6 +275,11 @@ impl Settings {
         self.games.truncate(MAX_GAMES);
         for g in &mut self.games {
             g.exe = exe_name(&g.exe).chars().take(260).collect();
+            // Only kept for the app's icon; drop anything that isn't a
+            // plausible path to this same program.
+            if g.path.as_deref().map(|p| p.len() > 1024 || exe_name(p) != g.exe).unwrap_or(false) {
+                g.path = None;
+            }
             if let Some(l) = g.lighting.as_mut() {
                 sanitize_lighting(l);
             }
