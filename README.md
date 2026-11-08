@@ -61,13 +61,30 @@ Download the installer from Releases and run it. It installs the app and the
 
 ### Linux
 
-Install the `.deb` or run the AppImage. Lighting needs the
-[facer kernel module](https://github.com/JafarAkhondali/acer-predator-turbo-and-rgb-keyboard-linux-module);
-temperatures and fan speeds come from the kernel's `acer` hwmon sensors. Then
-set up the service from the app, or run `sudo opensenses-service install`.
+Linux has every feature Windows has. The laptop's firmware is the same on both
+systems, so OpenSenses sends it exactly the same commands; on Linux they go
+through a small kernel driver that comes with OpenSenses (`driver/`), and GPU
+overclocking goes through NVIDIA's NVML instead of NVAPI.
 
-Fan modes, GPU levels and the settings toggles are Windows-only for now: the
-Linux module doesn't expose them.
+| Distribution | Package |
+| ------------ | ------- |
+| Ubuntu, Debian, Linux Mint, Pop!_OS, Zorin | `.deb` |
+| Fedora, Nobara, openSUSE | `.rpm` |
+| Arch, Manjaro, EndeavourOS and others | AppImage |
+
+The `.deb` and `.rpm` set up the background service and build the driver with
+DKMS, which rebuilds it after kernel updates. With the AppImage, open the app
+and click **Set up service**; it builds the driver too (with DKMS when it's
+installed, otherwise directly for the running kernel). Either way the driver
+needs your kernel's headers (`linux-headers-…` / `kernel-devel`). With Secure
+Boot on, DKMS asks you to enroll its signing key once.
+
+On image-based systems (Bazzite, Fedora Silverblue, SteamOS) extra drivers
+can't be built on the system itself, so the driver has to be included in the
+system image; until it is, OpenSenses shows temperatures only.
+
+Linux support hasn't been tested on real hardware yet, so the app marks it
+"(experimental)".
 
 ## How it works
 
@@ -78,6 +95,10 @@ hardware; it accepts settings only, checks their ranges, and never runs
 arbitrary commands.
 
 How the firmware is controlled is documented in [docs/protocol.md](docs/protocol.md).
+
+On Linux the service talks to the firmware through `/dev/opensenses`, which
+only root can open. The driver behind it lets through only the firmware
+methods listed in the protocol notes, nothing else.
 
 ## Building
 
