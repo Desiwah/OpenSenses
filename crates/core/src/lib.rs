@@ -1,4 +1,6 @@
 pub mod backend;
+#[cfg(target_os = "linux")]
+pub mod desktop;
 pub mod ipc;
 pub mod models;
 pub mod procs;
