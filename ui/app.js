@@ -40,7 +40,7 @@ function mockInvoke(cmd, args) {
         games: [{ exe: "eldenring.exe", enabled: true, lighting: null, fans: { mode: "max", cpu_percent: 50, gpu_percent: 50, gpu2_percent: 50 }, gpu: "turbo", win_key: false }],
       },
       sensors: {}, capabilities: mockCaps(),
-      backend: "preview", errors: [], overheat_guard: false,
+      backend: "preview", errors: [], overheat_guard: false, original: { taken: 1794100000, source: location.search.includes("factory") ? "factory" : "laptop" },
       toggles_now: { lcd_overdrive: false, boot_animation: false, backlight_timeout: true, win_key: true, discrete_gpu: false, cool_boost: false },
     };
     mock.settings.toggles = { lcd_overdrive: null, boot_animation: null, backlight_timeout: null, win_key: null, discrete_gpu: null, cool_boost: null };
@@ -60,6 +60,7 @@ function mockInvoke(cmd, args) {
   if (cmd === "find_program" || cmd === "pick_program") return Promise.resolve(null);
   mock.active_game = location.search.includes("playing") ? "eldenring.exe" : null;
   if (cmd === "set_sticky_keys") { mock.sticky = args.on; return Promise.resolve(null); }
+  if (cmd === "restore_original") { mock.settings.restored = true; mock.settings.fans.mode = "auto"; }
   if (cmd === "set_settings") {
     mock.settings = JSON.parse(JSON.stringify(args.settings));
     for (const [k, v] of Object.entries(mock.settings.toggles)) if (v != null) mock.toggles_now[k] = v;
@@ -161,6 +162,8 @@ function save() {
 
 function change(fn) {
   fn(settings);
+  // Any change ends the hands-off state after a restore.
+  settings.restored = false;
   renderAll();
   save();
 }
@@ -524,6 +527,7 @@ function renderSettings() {
   $("coming").hidden = coming.length === 0;
   $("comingList").textContent = coming.join(", ") + ".";
   $("expNote").hidden = (caps.experimental || []).length === 0;
+  renderRestore();
   $("modelLine").textContent = caps.product
     ? `${caps.model_name ? caps.model_name + ", " : ""}${caps.product}${caps.known_model ? "" : " (features found by testing what this laptop answers to)"}`
     : "";
@@ -821,6 +825,37 @@ async function browseGame() {
   if (path) addProgram(exeName(path), path);
 }
 
+/* ---------- restoring the original settings ---------- */
+
+function originalText() {
+  const o = state && state.original;
+  if (!o) return null;
+  const when = new Date(o.taken * 1000).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+  return o.source === "factory"
+    ? `Puts this laptop back to Acer's factory settings: its default keyboard colour, fans on Auto, no GPU overclock, CoolBoost off, the Windows key on and the idle backlight timeout on. (Saved ${when}; OpenSenses had already changed things before it kept a copy, so the factory settings are used.)`
+    : `Puts back the lighting, fans, GPU overclock and on/off settings this laptop had before OpenSenses first changed anything (saved ${when}).`;
+}
+
+function renderRestore() {
+  const text = originalText();
+  $("restoreCard").hidden = !text;
+  if (text) $("restoreText").textContent = text;
+  $("restoredBanner").hidden = !(settings && settings.restored);
+}
+
+async function restoreOriginal() {
+  $("restoreDialog").hidden = true;
+  try {
+    state = await invoke("restore_original");
+    settings = clone(state.settings);
+    renderAll();
+    if (state.errors && state.errors.length) showErrors(state);
+    else setStatus("Original settings restored");
+  } catch (e) {
+    setStatus(String(e), true);
+  }
+}
+
 /* ---------- rendering ---------- */
 
 function renderLighting() {
@@ -1056,6 +1091,9 @@ $("reapply").onclick = async () => {
   } catch (e) { setStatus(String(e), true); }
 };
 $("retry").onclick = () => refresh(true);
+$("restoreBtn").onclick = () => { $("rdText").textContent = originalText() || ""; $("restoreDialog").hidden = false; $("rdNo").focus(); };
+$("rdNo").onclick = () => ($("restoreDialog").hidden = true);
+$("rdYes").onclick = restoreOriginal;
 $("addGame").onclick = addGame;
 $("gameExe").addEventListener("keydown", (e) => { if (e.key === "Enter") addGame(); });
 $("gameExe").addEventListener("input", renderRunningApps);

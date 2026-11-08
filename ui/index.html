@@ -23,6 +23,7 @@
 
     <main>
       <p class="banner warn" id="noticeBanner" role="status" hidden></p>
+      <p class="banner" id="restoredBanner" role="status" hidden>Your original settings are back. OpenSenses isn't changing anything on the laptop until you change a setting here.</p>
       <p class="banner" id="gameBanner" role="status" hidden></p>
       <!-- Lighting -->
       <section class="page" id="page-lighting">
@@ -150,10 +151,17 @@
           <h2>Temperature unit</h2>
           <div class="seg small" id="unit" role="radiogroup" aria-label="Temperature unit"></div>
         </div>
+        <div class="restore-card" id="restoreCard">
+          <div>
+            <h2>Restore original settings</h2>
+            <p id="restoreText"></p>
+          </div>
+          <button type="button" class="ghost" id="restoreBtn">Restore…</button>
+        </div>
         <div class="about">
           <p id="modelLine"></p>
           <p id="coming" hidden>Planned for this model: <span id="comingList"></span></p>
-          <p id="expNote" hidden>“(experimental)” marks features that follow PredatorSense's own data for this laptop but haven't been tested on one yet. They should work; if something doesn't, turning it back off undoes it.</p>
+          <p id="expNote" hidden>“(experimental)” marks features that follow PredatorSense's own data for this laptop but haven't been tested on one yet. They should work; if something doesn't, turn it back off or use Restore original settings below.</p>
         </div>
       </section>
     </main>
@@ -167,6 +175,18 @@
     <span class="status-msg" id="statusMsg" role="status"></span>
     <button class="ghost" id="reapply">Apply again</button>
   </footer>
+
+  <div class="overlay" id="restoreDialog" hidden>
+    <div class="dialog" role="alertdialog" aria-labelledby="rdTitle" aria-describedby="rdText">
+      <h2 id="rdTitle">Restore original settings?</h2>
+      <p id="rdText"></p>
+      <p class="hint">Your game profiles are kept. Uninstalling OpenSenses does this automatically.</p>
+      <div class="actions">
+        <button class="primary" id="rdYes">Restore</button>
+        <button class="ghost" id="rdNo">Cancel</button>
+      </div>
+    </div>
+  </div>
 
   <div class="overlay" id="noService" hidden>
     <div class="dialog" role="alertdialog" aria-labelledby="nsTitle">
