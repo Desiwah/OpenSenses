@@ -12,7 +12,8 @@ Not affiliated with Acer.
   breathing, neon, wave, shifting and zoom with speed, brightness and
   direction. A temperature mode turns the keyboard from blue to red as the
   CPU heats up.
-- **Fans:** Auto, Max, or a fixed speed per fan. If a chip gets too hot in
+- **Fans:** Auto, Max, or a fixed speed per fan, plus CoolBoost for extra
+  cooling in Auto mode. If a chip gets too hot in
   custom mode (CPU 95 °C or GPU 90 °C), both fans go to Max until it cools
   below 80 °C.
 - **GPU:** PredatorSense's Normal, Faster and Turbo overclock levels.
@@ -42,7 +43,8 @@ do, using the per-model data PredatorSense 3.00 shipped with:
 | Triton 900 (PT917-71) | per-key (planned) | CPU, GPU | 3 | boot animation |
 
 The PH317-53 is tested on real hardware; the others follow PredatorSense's own
-data for them. Other Predator and Nitro laptops with the same firmware
+data for them, and the app marks their features "(experimental)" until someone
+confirms them. The Linux side is experimental too. Other Predator and Nitro laptops with the same firmware
 interface work too: OpenSenses asks the firmware what it answers to and
 enables those features. GPU levels are offered only for GPUs PredatorSense had
 overclock numbers for.
