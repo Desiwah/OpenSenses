@@ -20,7 +20,8 @@ function mockCaps() {
   if (q === "PT515-51") Object.assign(base, { model_name: "Predator Triton 500", fans: ["cpu", "gpu", "gpu2"],
     gpu_levels: [lv("normal", 0, 120), lv("faster", 75, 200), lv("turbo", 100, 270)],
     toggles: ["backlight_timeout", "lcd_overdrive", "discrete_gpu", "win_key", "boot_animation", "cool_boost"] });
-  base.cpu_follows_gpu = true; base.turbo_key = true; base.fan_table = true; base.cpu_levels = []; base.hotkey_keys = 0;
+  // The PH317-53's BIOS turns the CPU level down, so only the fan curve follows.
+  base.cpu_follows_gpu = false; base.turbo_key = true; base.fan_table = true; base.cpu_levels = []; base.hotkey_keys = 0;
   if (q === "PH717-71") Object.assign(base, { model_name: "Predator Helios 700", lighting: false, per_key: true,
     gpu_levels: [lv("normal", 0, 0), lv("faster", 60, 133), lv("boosted", 60, 266), lv("turbo", 100, 400)],
     toggles: ["backlight_timeout", "win_key", "boot_animation", "cool_boost"], cpu_follows_gpu: false, cpu_levels: ["normal", "faster", "boosted", "turbo"], hotkey_keys: 3, ps_key: true,
