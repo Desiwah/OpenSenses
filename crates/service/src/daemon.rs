@@ -60,6 +60,69 @@ impl Daemon {
             overheat_guard: self.guard,
             toggles_now: self.toggles_now,
             active_game: self.game.and_then(|i| self.settings.games.get(i)).map(|g| g.exe.clone()),
+            original: pcore::snapshot::load().map(|s| s.info()),
+        }
+    }
+
+    /// Puts the original settings back and stops changing anything until
+    /// the user changes a setting. The saved settings then describe the
+    /// restored laptop, so the app shows what it really has.
+    fn restore_original(&mut self) {
+        let Some(snap) = pcore::snapshot::load() else {
+            self.errors = vec!["no original settings were saved on this laptop".into()];
+            return;
+        };
+        let Some(hw) = self.hw.as_mut() else { return };
+        log::info!("restoring the original settings ({:?}, taken {})", snap.source, snap.taken);
+        self.errors = hw.restore(&snap);
+        for e in &self.errors {
+            log::warn!("restore: {e}");
+        }
+        let caps = hw.capabilities();
+        let mut s = self.settings.clone();
+        if let Some((effect, speed, brightness, direction, colour)) = snap.kb_effect.as_deref().and_then(pcore::protocol::decode_kb_backlight) {
+            s.lighting.effect = effect;
+            s.lighting.speed = speed.max(1);
+            s.lighting.brightness = brightness;
+            s.lighting.direction = direction;
+            if colour != Rgb::default() {
+                s.lighting.colour = colour;
+            }
+        }
+        if let Some(z) = snap.zones {
+            s.lighting.zone_on = z.map(|c| c != Rgb::default());
+            s.lighting.zones = z.map(|c| if c == Rgb::default() { s.lighting.colour } else { c });
+        }
+        if let Some(&(_, first)) = snap.fans.first() {
+            s.fans.mode = if snap.fans.iter().all(|&(_, m)| m == first) { first } else { FanMode::Auto };
+        }
+        for &(fan, pct) in &snap.fan_speeds {
+            match fan {
+                pcore::settings::Fan::Cpu => s.fans.cpu_percent = Some(pct),
+                pcore::settings::Fan::Gpu => s.fans.gpu_percent = Some(pct),
+                pcore::settings::Fan::Gpu2 => s.fans.gpu2_percent = Some(pct),
+            }
+        }
+        s.gpu = caps
+            .gpu_levels
+            .iter()
+            .find(|l| Some(l.core_mhz) == snap.gpu_core && Some(l.memory_mhz) == snap.gpu_memory)
+            .map(|l| l.mode)
+            .unwrap_or(pcore::settings::GpuMode::Normal);
+        // Everything is as it was; "leave as is" from now on.
+        s.toggles = Default::default();
+        s.restored = true;
+        self.settings = s;
+        if let Err(e) = settings::save(&self.settings) {
+            log::error!("saving settings: {e:#}");
+        }
+        self.game = None;
+        self.restore_win_key = None;
+        self.guard = false;
+        self.temp_colour = None;
+        self.applied = self.settings.clone();
+        if let Some(hw) = self.hw.as_mut() {
+            self.toggles_now = hw.observe().toggles;
         }
     }
 
@@ -104,8 +167,18 @@ impl Daemon {
     /// Sends what changed since `old` (or everything) and refreshes the
     /// toggle states shown in the app.
     fn apply_from(&mut self, old: Option<&Settings>) {
+        if self.settings.restored {
+            return;
+        }
         let new = self.effective();
         let Some(hw) = self.hw.as_mut() else { return };
+        let caps = hw.capabilities();
+        if !self.settings.touched && (caps.lighting || !caps.fans.is_empty() || !caps.toggles.is_empty() || !caps.gpu_levels.is_empty()) {
+            self.settings.touched = true;
+            if let Err(e) = settings::save(&self.settings) {
+                log::error!("saving settings: {e:#}");
+            }
+        }
         self.errors = pcore::apply_changes(hw.as_mut(), old, &new);
         if old.map(|o| o.lighting != new.lighting).unwrap_or(true) {
             self.temp_colour = None;
@@ -145,13 +218,30 @@ impl Daemon {
                 self.retarget();
                 self.apply_since_last();
             }
-            Request::Reapply => self.apply(),
+            Request::Reapply => {
+                // "Apply again" after a restore means "use my settings again".
+                if self.settings.restored {
+                    self.settings.restored = false;
+                    if let Err(e) = settings::save(&self.settings) {
+                        log::error!("saving settings: {e:#}");
+                    }
+                }
+                self.apply()
+            }
+            Request::RestoreOriginal => self.restore_original(),
         }
         Response::State(self.state())
     }
 
     fn tick(&mut self) {
         if self.hw.is_none() {
+            return;
+        }
+        if self.settings.restored {
+            // Hands off after a restore: sensors only.
+            if let Some(hw) = self.hw.as_mut() {
+                self.sensors = hw.sensors();
+            }
             return;
         }
         // GameSync: switch profiles as games start and close.
@@ -200,7 +290,7 @@ impl Daemon {
     }
 
     fn check_drift(&mut self) {
-        if !self.settings.keep_applied || self.guard {
+        if !self.settings.keep_applied || self.guard || self.settings.restored {
             return;
         }
         let Some(hw) = self.hw.as_mut() else { return };
@@ -249,6 +339,21 @@ pub fn run(jobs: Receiver<Job>) {
         Some(s) => (s, false),
         None => (adopt_current(&mut hw), true),
     };
+    // Save the laptop's own settings once, before anything is sent to it,
+    // so they can be restored later. If an older OpenSenses already changed
+    // them, Acer's defaults for the model are the better "original".
+    if pcore::snapshot::load().is_none() {
+        if let Some(h) = hw.as_mut() {
+            let already_changed = !first_run && initial.touched;
+            let snap = if already_changed { h.factory_snapshot().or_else(|| h.snapshot()) } else { h.snapshot() };
+            if let Some(s) = snap {
+                match pcore::snapshot::save_once(&s) {
+                    Ok(()) => log::info!("saved the original settings ({:?})", s.source),
+                    Err(e) => log::error!("saving the original settings: {e:#}"),
+                }
+            }
+        }
+    }
     if first_run {
         if let Err(e) = settings::save(&initial) {
             log::error!("saving settings: {e:#}");
@@ -273,7 +378,7 @@ pub fn run(jobs: Receiver<Job>) {
             d.toggles_now = hw.observe().toggles;
         }
     }
-    if d.settings.keep_applied && !first_run {
+    if d.settings.keep_applied && !first_run && !d.settings.restored {
         d.apply();
     }
 
@@ -301,7 +406,7 @@ pub fn run(jobs: Receiver<Job>) {
         let now = SystemTime::now();
         let slept = now.duration_since(last_tick_wall).map(|gap| gap > SLEEP_GAP).unwrap_or(false);
         last_tick_wall = now;
-        if slept && d.settings.keep_applied {
+        if slept && d.settings.keep_applied && !d.settings.restored {
             log::info!("woke from sleep, re-applying");
             d.apply();
         }
