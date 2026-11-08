@@ -3,6 +3,72 @@
 
 use crate::settings::{Direction, Effect, Fan, FanMode, Rgb};
 
+/// The two firmware interfaces. On Windows they are the WMI classes of the
+/// same names; on Linux the OpenSenses driver reaches them by GUID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Iface {
+    /// `AcerGamingFunction`, GUID 7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56.
+    Gaming,
+    /// `APGeAction`, GUID 61EF69EA-865C-4BC3-A502-A0DEBA0CB531.
+    Apge,
+}
+
+/// WMI method ids, as listed in the firmware's own class description
+/// (read on a PH317-53, version 2.63). Linux calls methods by these ids.
+pub fn method_id(iface: Iface, name: &str) -> Option<u32> {
+    const GAMING: &[&str] = &[
+        "SetGamingProfile",
+        "SetGamingLED",
+        "GetGamingProfile",
+        "GetGamingLED",
+        "GetGamingSysInfo",
+        "SetGamingRgbKb",
+        "GetGamingRgbKb",
+        "SetGamingProfileSetting",
+        "GetGamingProfileSetting",
+        "SetGamingLEDBehavior",
+        "GetGamingLEDBehavior",
+        "SetGamingLEDColor",
+        "GetGamingLEDColor",
+        "SetGamingFanBehavior",
+        "GetGamingFanBehavior",
+        "SetGamingFanSpeed",
+        "GetGamingFanSpeed",
+        "SetGamingFanTable",
+        "GetGamingFanTable",
+        "SetGamingKBBacklight",
+        "GetGamingKBBacklight",
+        "SetGamingMiscSetting",
+        "GetGamingMiscSetting",
+    ];
+    const APGE: &[&str] = &["SetFunction", "GetFunction"];
+    let list = match iface {
+        Iface::Gaming => GAMING,
+        Iface::Apge => APGE,
+    };
+    list.iter().position(|m| *m == name).map(|i| i as u32 + 1)
+}
+
+/// A method's input: its size is what the firmware's class description
+/// declares (uint32, uint64 or a 16-byte array).
+#[derive(Debug, Clone, Copy)]
+pub enum Input {
+    U32(u32),
+    U64(u64),
+    Bytes([u8; 16]),
+}
+
+impl Input {
+    /// Little-endian bytes, as the ACPI method receives them.
+    pub fn bytes(&self) -> Vec<u8> {
+        match self {
+            Input::U32(n) => n.to_le_bytes().to_vec(),
+            Input::U64(n) => n.to_le_bytes().to_vec(),
+            Input::Bytes(b) => b.to_vec(),
+        }
+    }
+}
+
 /// Zone bit for the 4-zone keyboard (zone 1 = left .. zone 4 = right).
 pub fn zone_mask(zone: u8) -> u32 {
     match zone {
@@ -269,6 +335,18 @@ pub const TURBO_LED_OFF: u64 = 0x1;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn method_ids_match_the_firmware() {
+        assert_eq!(method_id(Iface::Gaming, "SetGamingLED"), Some(2));
+        assert_eq!(method_id(Iface::Gaming, "SetGamingRgbKb"), Some(6));
+        assert_eq!(method_id(Iface::Gaming, "SetGamingFanBehavior"), Some(14));
+        assert_eq!(method_id(Iface::Gaming, "SetGamingKBBacklight"), Some(20));
+        assert_eq!(method_id(Iface::Gaming, "GetGamingMiscSetting"), Some(23));
+        assert_eq!(method_id(Iface::Apge, "GetFunction"), Some(2));
+        assert_eq!(method_id(Iface::Gaming, "Nope"), None);
+        assert_eq!(Input::U32(0x0A0B0C0D).bytes(), vec![0x0D, 0x0C, 0x0B, 0x0A]);
+    }
 
     #[test]
     fn zone_colour_matches_predatorsense() {
