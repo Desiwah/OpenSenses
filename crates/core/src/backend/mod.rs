@@ -2,8 +2,11 @@ use crate::settings::{Fan, FanMode, GpuMode, Rgb, Toggle, Toggles};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+pub mod acer;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "linux")]
+pub mod nvml;
 #[cfg(windows)]
 pub mod nvapi;
 #[cfg(windows)]
@@ -52,6 +55,8 @@ pub struct Capabilities {
     /// "fans", "gpu", "monitor", "games" and toggle keys ("cool_boost").
     /// GameSync itself only depends on the OS, so it is only listed on Linux.
     pub experimental: Vec<String>,
+    /// Something the user should know or do, e.g. install the Linux driver.
+    pub notice: Option<String>,
 }
 
 impl Capabilities {
@@ -131,11 +136,11 @@ pub fn coming_features(m: &crate::models::Model) -> Vec<String> {
 pub fn open() -> Result<Box<dyn Backend>> {
     #[cfg(windows)]
     {
-        Ok(Box::new(windows::WmiBackend::open()?))
+        Ok(Box::new(windows::open()?))
     }
     #[cfg(target_os = "linux")]
     {
-        Ok(Box::new(linux::LinuxBackend::open()?))
+        linux::open()
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {
