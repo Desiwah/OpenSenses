@@ -188,6 +188,22 @@ input[type="range"] { width: 100%; accent-color: var(--focus); }
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 8px 10px;
 }
 .text-field input { font-size: 15px; }
+.running { max-width: 760px; margin-top: 18px; }
+.running-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.running-head h2 { font: 400 17px var(--display); margin: 0; }
+.app-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; max-height: 236px; overflow: auto; padding: 2px; }
+.app-tile {
+  display: flex; align-items: center; gap: 10px; text-align: left; padding: 8px 10px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-s);
+}
+.app-tile:hover:not(:disabled) { border-color: var(--focus); }
+.app-tile:disabled { opacity: .45; cursor: default; }
+.app-tile .gicon { width: 32px; height: 32px; border-radius: 7px; font-size: 16px; }
+.app-tile span { display: grid; min-width: 0; line-height: 1.3; }
+.app-tile b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-tile small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.icon-btn { background: none; border: 0; padding: 0; cursor: pointer; border-radius: 9px; }
+.icon-btn:hover .gicon { outline: 2px solid var(--focus); outline-offset: 2px; }
 .games { display: grid; gap: 12px; margin-top: 18px; max-width: 760px; }
 .game { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 16px 20px; }
 .game[data-running="true"] { border-color: var(--focus); }

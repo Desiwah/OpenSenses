@@ -120,13 +120,21 @@
         </header>
         <div class="toggles" id="gameSyncRow"></div>
         <div class="add-game">
-          <label class="text-field"><span>Program file</span>
-            <input id="gameExe" list="runningApps" placeholder="e.g. eldenring.exe" spellcheck="false" autocomplete="off">
+          <label class="text-field"><span>Add a game</span>
+            <input id="gameExe" placeholder="Type to search running programs, or a program name like eldenring.exe" spellcheck="false" autocomplete="off">
           </label>
-          <datalist id="runningApps"></datalist>
-          <button type="button" class="primary" id="addGame">Add game</button>
+          <button type="button" class="ghost" id="browseGame">Browse…</button>
+          <button type="button" class="primary" id="addGame">Add</button>
         </div>
-        <p class="hint" id="addGameHint">Start the game first and it shows up in the list as you type, or enter its .exe name.</p>
+        <div class="running">
+          <div class="running-head">
+            <h2>Running now</h2>
+            <button type="button" class="ghost" id="refreshApps">Refresh</button>
+          </div>
+          <div class="app-grid" id="appGrid"></div>
+          <p class="hint" id="appEmpty" hidden></p>
+          <p class="hint">Start the game and it shows up here, or use Browse… to pick its .exe file.</p>
+        </div>
         <div class="games" id="gameList"></div>
       </section>
 

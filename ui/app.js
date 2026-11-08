@@ -57,6 +57,7 @@ function mockInvoke(cmd, args) {
   if (cmd === "get_sticky_keys") return Promise.resolve(mock.sticky);
   if (cmd === "running_apps") return Promise.resolve(["discord.exe", "eldenring.exe", "steam.exe", "cyberpunk2077.exe"].map((name) => ({ name, path: `C:\\Games\\${name}` })));
   if (cmd === "app_icon") return Promise.resolve(null);
+  if (cmd === "find_program" || cmd === "pick_program") return Promise.resolve(null);
   mock.active_game = location.search.includes("playing") ? "eldenring.exe" : null;
   if (cmd === "set_sticky_keys") { mock.sticky = args.on; return Promise.resolve(null); }
   if (cmd === "set_settings") {
@@ -556,30 +557,43 @@ function rowIcon(name) {
   return svg;
 }
 
-// The game's own icon when its program file is known, else its first letter.
-function gameIcon(g) {
+// A program's own icon when its file is known, else its first letter.
+function programIcon(name, path) {
   const letter = document.createElement("span");
   letter.className = "gicon letter";
-  letter.textContent = gameTitle(g.exe).charAt(0);
+  letter.textContent = gameTitle(name).charAt(0);
   let h = 0;
-  for (const ch of g.exe) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) % 360;
   letter.style.setProperty("--h", h);
-  if (!g.path) return letter;
-  const show = (url) => {
-    if (!url) return;
-    const img = document.createElement("img");
-    img.className = "gicon";
-    img.alt = "";
-    img.src = url;
-    letter.replaceWith(img);
+  if (!path) return letter;
+  const img = (url) => {
+    const i = document.createElement("img");
+    i.className = "gicon"; i.alt = ""; i.src = url;
+    return i;
   };
-  if (iconCache.has(g.path)) {
-    const url = iconCache.get(g.path);
-    if (url) { const img = document.createElement("img"); img.className = "gicon"; img.alt = ""; img.src = url; return img; }
-    return letter;
-  }
-  invoke("app_icon", { path: g.path }).then((url) => { iconCache.set(g.path, url || null); show(url); }).catch(() => iconCache.set(g.path, null));
+  if (iconCache.has(path)) return iconCache.get(path) ? img(iconCache.get(path)) : letter;
+  invoke("app_icon", { path })
+    .then((url) => { iconCache.set(path, url || null); if (url && letter.isConnected) letter.replaceWith(img(url)); })
+    .catch(() => iconCache.set(path, null));
   return letter;
+}
+
+// Games added by name: look up where their program lives once per session.
+const lookedUp = new Set();
+function findMissingPaths() {
+  for (const g of settings.games || []) {
+    if (g.path || lookedUp.has(g.exe)) continue;
+    lookedUp.add(g.exe);
+    invoke("find_program", { exe: g.exe }).then((path) => {
+      if (!path) return;
+      const i = settings.games.findIndex((x) => x.exe === g.exe && !x.path);
+      if (i >= 0) change((s) => (s.games[i].path = path));
+    }).catch(() => {});
+  }
+}
+
+async function pickProgram() {
+  try { return await invoke("pick_program"); } catch (e) { setStatus(String(e), true); return null; }
 }
 
 function option(value, label, selected) {
@@ -619,7 +633,19 @@ function gameCard(g, i, caps) {
   const head = document.createElement("div");
   head.className = "game-head";
   head.innerHTML = `<span class="names"><h3></h3><span class="exe"></span></span><span class="live"></span><label class="sw"><input type="checkbox" role="switch"><span></span></label>`;
-  head.prepend(gameIcon(g));
+  const iconBtn = document.createElement("button");
+  iconBtn.type = "button";
+  iconBtn.className = "icon-btn";
+  iconBtn.title = g.path ? `${g.path}\nClick to choose a different program file` : "Click to choose the game's program file";
+  iconBtn.setAttribute("aria-label", `Choose the program file for ${g.exe}`);
+  iconBtn.appendChild(programIcon(g.exe, g.path));
+  iconBtn.onclick = async () => {
+    const path = await pickProgram();
+    if (!path) return;
+    if (exeName(path) !== g.exe) { setStatus(`That's ${exeName(path)}, not ${g.exe}`, true); return; }
+    change((s) => (s.games[i].path = path));
+  };
+  head.prepend(iconBtn);
   head.querySelector("h3").textContent = gameTitle(g.exe);
   head.querySelector(".exe").textContent = g.exe;
   head.querySelector(".live").textContent = running ? "Running, profile in use" : "";
@@ -716,6 +742,31 @@ function renderGames() {
   }
   $("gameList").replaceChildren(...list);
   renderGameBanner();
+  renderRunningApps();
+  findMissingPaths();
+}
+
+// Running programs as tiles with their icons; a click adds one.
+function renderRunningApps() {
+  const filter = exeName($("gameExe").value || "").replace(/\.exe$/, "");
+  const added = new Set((settings.games || []).map((g) => g.exe));
+  const apps = runningApps.filter((a) => !filter || a.name.includes(filter));
+  $("appGrid").replaceChildren(...apps.map((a) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "app-tile";
+    b.disabled = added.has(a.name);
+    b.title = a.path || a.name;
+    const label = document.createElement("span");
+    label.innerHTML = "<b></b><small></small>";
+    label.querySelector("b").textContent = gameTitle(a.name);
+    label.querySelector("small").textContent = added.has(a.name) ? "Added" : a.name;
+    b.append(programIcon(a.name, a.path), label);
+    b.onclick = () => addProgram(a.name, a.path);
+    return b;
+  }));
+  $("appEmpty").hidden = apps.length > 0;
+  $("appEmpty").textContent = runningApps.length ? "Nothing running matches that name." : "No programs with a window are running.";
 }
 
 function renderGameBanner() {
@@ -727,7 +778,7 @@ function renderGameBanner() {
 
 async function loadRunningApps() {
   try { runningApps = await invoke("running_apps"); } catch { runningApps = []; }
-  $("runningApps").replaceChildren(...runningApps.map((a) => option(a.name, gameTitle(a.name), false)));
+  renderRunningApps();
   // Games added by name pick up their program path (and so their icon)
   // the first time they're seen running.
   const found = (settings.games || []).filter((g) => !g.path && runningApps.some((a) => a.name === g.exe && a.path));
@@ -739,19 +790,29 @@ async function loadRunningApps() {
   });
 }
 
-function addGame() {
-  const typed = $("gameExe").value.trim().replace(/^"(.*)"$/, "$1"); // Explorer's "Copy as path" adds quotes
-  const exe = exeName(typed);
-  if (!exe) return;
-  const seen = runningApps.find((a) => a.name === exe && a.path);
-  const path = /[\\/]/.test(typed) ? typed : seen ? seen.path : null;
-  if ((settings.games || []).some((g) => g.exe === exe)) { setStatus(`${exe} is already in the list`, true); return; }
+function addProgram(exe, path) {
+  if ((settings.games || []).some((g) => g.exe === exe)) { setStatus(`${gameTitle(exe)} is already in the list`, true); return; }
   change((s) => {
     s.games = s.games || [];
-    s.games.push({ exe, path, enabled: true, lighting: null, fans: null, gpu: null, win_key: null });
+    s.games.push({ exe, path: path || null, enabled: true, lighting: null, fans: null, gpu: null, win_key: null });
   });
   $("gameExe").value = "";
-  setStatus(`Added ${exe}. Pick what should change while it runs.`);
+  renderRunningApps();
+  setStatus(`Added ${gameTitle(exe)}. Pick what should change while it runs.`);
+}
+
+function addGame() {
+  const typed = $("gameExe").value.trim().replace(/^"(.*)"$/, "$1"); // Explorer's "Copy as path" adds quotes
+  let exe = exeName(typed);
+  if (!exe) return;
+  if (!exe.includes(".")) exe += ".exe";
+  const seen = runningApps.find((a) => a.name === exe && a.path);
+  addProgram(exe, /[\\/]/.test(typed) ? typed : seen ? seen.path : null);
+}
+
+async function browseGame() {
+  const path = await pickProgram();
+  if (path) addProgram(exeName(path), path);
 }
 
 /* ---------- rendering ---------- */
@@ -989,7 +1050,9 @@ $("reapply").onclick = async () => {
 $("retry").onclick = () => refresh(true);
 $("addGame").onclick = addGame;
 $("gameExe").addEventListener("keydown", (e) => { if (e.key === "Enter") addGame(); });
-$("gameExe").addEventListener("focus", loadRunningApps);
+$("gameExe").addEventListener("input", renderRunningApps);
+$("browseGame").onclick = browseGame;
+$("refreshApps").onclick = loadRunningApps;
 document.querySelector('.tab[data-page="games"]').addEventListener("click", loadRunningApps);
 $("installService").onclick = async () => {
   $("nsDetail").textContent = "Waiting for you to approve the administrator prompt…";
