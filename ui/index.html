@@ -17,6 +17,7 @@
       <button class="tab" data-page="gpu">GPU</button>
       <button class="tab" data-page="monitor">Monitor</button>
       <button class="tab" data-page="games">Games</button>
+      <button class="tab" data-page="keys" hidden>Keys</button>
       <button class="tab" data-page="settings">Settings</button>
       <div class="rail-temps" id="railTemps" aria-live="polite"></div>
     </nav>
@@ -82,6 +83,7 @@
               <div class="seg small" id="direction" role="radiogroup" aria-label="Direction"></div>
             </div>
           </div>
+          <div class="toggles" id="extraLights" hidden></div>
         </div>
       </section>
 
@@ -104,6 +106,19 @@
           <p id="gpuIntro"></p>
         </header>
         <div class="levels" id="gpuLevels" role="radiogroup" aria-label="GPU level"></div>
+        <p class="hint" id="cpuFollows" hidden></p>
+        <div class="field cpu-field" id="cpuField" hidden>
+          <h2 id="cpuTitle">CPU overclock</h2>
+          <div class="seg" id="cpuLevels" role="radiogroup" aria-label="CPU level"></div>
+          <p class="hint" id="cpuHint"></p>
+        </div>
+        <div class="restore-card turbo-card" id="turboCard" hidden>
+          <div>
+            <h2 id="turboTitle">Turbo</h2>
+            <p id="turboText"></p>
+          </div>
+          <button type="button" class="ghost" id="turboBtn">Turn on</button>
+        </div>
       </section>
 
       <!-- Monitor -->
@@ -140,6 +155,22 @@
         <div class="games" id="gameList"></div>
       </section>
 
+      <!-- Programmable keys -->
+      <section class="page" id="page-keys" hidden>
+        <header class="page-head">
+          <h1 data-title="keys">Keys</h1>
+          <p id="keysIntro">The programmable keys above the keyboard. Each key does something different in each of the three groups; the laptop's group key switches between them.</p>
+        </header>
+        <div class="field">
+          <h2>Group</h2>
+          <div class="seg" id="keyGroups" role="radiogroup" aria-label="Key group"></div>
+        </div>
+        <label class="text-field group-name"><span>Group name</span>
+          <input id="groupName" maxlength="40" spellcheck="false" autocomplete="off">
+        </label>
+        <div class="games" id="keyList"></div>
+      </section>
+
       <!-- Settings -->
       <section class="page" id="page-settings" hidden>
         <header class="page-head">
@@ -147,6 +178,11 @@
           <p>The on/off options PredatorSense had for this laptop. Anything you haven't changed here stays the way the laptop already has it.</p>
         </header>
         <div class="toggles" id="toggles"></div>
+        <div class="field unit-field" id="turboKeyField" hidden>
+          <h2>Turbo key</h2>
+          <div class="seg small" id="turboKey" role="radiogroup" aria-label="What the Turbo key does"></div>
+          <p class="hint" id="turboKeyHint"></p>
+        </div>
         <div class="field unit-field">
           <h2>Temperature unit</h2>
           <div class="seg small" id="unit" role="radiogroup" aria-label="Temperature unit"></div>
@@ -188,6 +224,20 @@
     </div>
   </div>
 
+  <div class="overlay" id="macroDialog" hidden>
+    <div class="dialog" role="dialog" aria-labelledby="mdTitle" aria-describedby="mdText">
+      <h2 id="mdTitle">Record a macro</h2>
+      <p id="mdText">Press the keys you want this key to type, then click Done. Up to 50 steps.</p>
+      <label class="switch"><input type="checkbox" id="mdPauses"> Keep the pauses between keys</label>
+      <p class="macro-keys" id="mdKeys" aria-live="polite"></p>
+      <div class="actions">
+        <button class="primary" id="mdDone">Done</button>
+        <button class="ghost" id="mdClear">Start over</button>
+        <button class="ghost" id="mdCancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div class="overlay" id="noService" hidden>
     <div class="dialog" role="alertdialog" aria-labelledby="nsTitle">
       <h2 id="nsTitle">The background service isn't running</h2>
@@ -200,6 +250,7 @@
     </div>
   </div>
 
+  <script src="layouts.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

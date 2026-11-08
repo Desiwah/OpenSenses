@@ -20,9 +20,15 @@ function mockCaps() {
   if (q === "PT515-51") Object.assign(base, { model_name: "Predator Triton 500", fans: ["cpu", "gpu", "gpu2"],
     gpu_levels: [lv("normal", 0, 120), lv("faster", 75, 200), lv("turbo", 100, 270)],
     toggles: ["backlight_timeout", "lcd_overdrive", "discrete_gpu", "win_key", "boot_animation", "cool_boost"] });
+  base.cpu_follows_gpu = true; base.turbo_key = true; base.fan_table = true; base.cpu_levels = []; base.hotkey_keys = 0;
   if (q === "PH717-71") Object.assign(base, { model_name: "Predator Helios 700", lighting: false, per_key: true,
     gpu_levels: [lv("normal", 0, 0), lv("faster", 60, 133), lv("boosted", 60, 266), lv("turbo", 100, 400)],
-    toggles: ["boot_animation", "cool_boost"], coming: ["Per-key keyboard lighting", "CPU overclocking", "Programmable hotkeys"] });
+    toggles: ["backlight_timeout", "win_key", "boot_animation", "cool_boost"], cpu_follows_gpu: false, cpu_levels: ["normal", "faster", "boosted", "turbo"], hotkey_keys: 3, ps_key: true,
+    per_key_layout: 0, heat_pipe_light: true, touchpad_light: 1 });
+  if (q === "PT917-71") Object.assign(base, { model_name: "Predator Triton 900", lighting: false, per_key: true,
+    toggles: ["backlight_timeout", "win_key", "boot_animation", "cool_boost"], cpu_follows_gpu: false, hotkey_keys: 3, ps_key: true,
+    per_key_layout: 1, fan_light: true, touchpad_light: 2 });
+  if (q === "PH517-51") Object.assign(base, { model_name: "Predator Helios 500", toggles: ["win_key", "cool_boost"], cpu_follows_gpu: false, turbo_key: false, hotkey_keys: 5, ps_key: true });
   if (q === "unknown") Object.assign(base, { product: "Nitro AN515-55", model_name: "Nitro 5", known_model: false,
     gpu_levels: [], toggles: ["backlight_timeout", "boot_animation"] });
   if (q !== "PH317-53") base.experimental = all(base.toggles);
@@ -34,13 +40,13 @@ function mockInvoke(cmd, args) {
     mock = {
       settings: {
         lighting: { effect: "static", zones: [teal, { r: 70, g: 120, b: 255 }, { r: 190, g: 70, b: 255 }, { r: 255, g: 70, b: 120 }],
-          zone_on: [true, true, true, true], colour: teal, speed: 4, brightness: 100, direction: "right_to_left" },
+          zone_on: [true, true, true, true], colour: teal, speed: 4, brightness: 100, direction: "right_to_left", keys: [], extras: {} },
         fans: { mode: "auto", cpu_percent: 50, gpu_percent: 50 },
-        gpu: "normal", keep_applied: true, game_sync: true,
+        gpu: "normal", cpu: "normal", turbo_key: "performance", hotkeys: [], keep_applied: true, game_sync: true,
         games: [{ exe: "eldenring.exe", enabled: true, lighting: null, fans: { mode: "max", cpu_percent: 50, gpu_percent: 50, gpu2_percent: 50 }, gpu: "turbo", win_key: false }],
       },
       sensors: {}, capabilities: mockCaps(),
-      backend: "preview", errors: [], overheat_guard: false, original: { taken: 1794100000, source: location.search.includes("factory") ? "factory" : "laptop" },
+      backend: "preview", errors: [], overheat_guard: false, turbo: false, cpu_level: 0, power: [true, 87], hotkey_group: 1, notice: null, original: { taken: 1794100000, source: location.search.includes("factory") ? "factory" : "laptop" },
       toggles_now: { lcd_overdrive: false, boot_animation: false, backlight_timeout: true, win_key: true, discrete_gpu: false, cool_boost: false },
     };
     mock.settings.toggles = { lcd_overdrive: null, boot_animation: null, backlight_timeout: null, win_key: null, discrete_gpu: null, cool_boost: null };
@@ -60,6 +66,8 @@ function mockInvoke(cmd, args) {
   if (cmd === "find_program" || cmd === "pick_program") return Promise.resolve(null);
   mock.active_game = location.search.includes("playing") ? "eldenring.exe" : null;
   if (cmd === "set_sticky_keys") { mock.sticky = args.on; return Promise.resolve(null); }
+  if (cmd === "set_turbo") { mock.turbo = args.on; mock.notice = [(mock.notice ? mock.notice[0] : 0) + 1, args.on ? "Turbo on" : "Turbo off"]; }
+  if (cmd === "test_key") mock.notice = [(mock.notice ? mock.notice[0] : 0) + 1, `Key ${args.detail[2]} pressed (preview)`];
   if (cmd === "restore_original") { mock.settings.restored = true; mock.settings.fans.mode = "auto"; }
   if (cmd === "set_settings") {
     mock.settings = JSON.parse(JSON.stringify(args.settings));
@@ -76,6 +84,7 @@ let selectedZone = 0;
 let saveTimer = null;
 let lastToggles = "";
 let lastGame;
+let lastLive = "";
 const history = { cpu_temp: [], gpu_temp: [], sys_temp: [], cpu_fan_rpm: [], gpu_fan_rpm: [] };
 const $ = (id) => document.getElementById(id);
 
@@ -89,8 +98,33 @@ const EFFECTS = [
   ["zoom", "Zoom", "Colour pulses outward from the middle."],
   ["temperature", "Temperature", "The keyboard shows how hot the CPU is: blue when cool, through green and yellow, to red when hot."],
 ];
+// The per-key keyboards' built-in effects (Helios 700, Triton 900).
+const PER_KEY_EFFECTS = [
+  ["static", "Static", "Every key keeps its own colour. Click keys on the keyboard to pick them (Ctrl or Shift adds more), then choose a colour."],
+  ["breathing", "Breathing", "One colour fades in and out."],
+  ["wave", "Wave", "A rainbow moves across the keyboard."],
+  ["reactive", "Press to light", "Keys light up in the colour when you press them."],
+  ["ripple", "Ripple", "Each key press sends a ring of colour across the keyboard."],
+  ["marquee", "Marquee", "A band of the colour runs along the keyboard."],
+  ["rainbow_marquee", "Colourful marquee", "Bands of every colour run along the keyboard."],
+  ["raindrop", "Rain drop", "Keys light up at random, like rain."],
+  ["circle_marquee", "Circle marquee", "Colour circles around the keyboard."],
+  ["hedge", "Hedge", "Rows of colour move across the keyboard."],
+  ["spiral", "Rotate", "Colour turns around the middle of the keyboard."],
+  ["neon", "Neon", "The whole keyboard cycles through every colour."],
+  ["shifting", "Shifting", "A band of colour sweeps across the keyboard."],
+  ["zoom", "Zoom", "Colour pulses outward from the middle."],
+];
+const PER_KEY_COLOURED = ["breathing", "reactive", "ripple", "marquee", "raindrop", "circle_marquee", "hedge", "shifting", "zoom"];
 const BRIGHTNESS = [[0, "Off"], [25, "25%"], [50, "50%"], [75, "75%"], [100, "100%"]];
 const DIRECTIONS = [["right_to_left", "Right to left"], ["left_to_right", "Left to right"]];
+const WAVE_DIRECTIONS = [["right_to_left", "Left"], ["left_to_right", "Right"], ["up", "Up"], ["down", "Down"]];
+const SPIRAL_DIRECTIONS = [["right_to_left", "Anticlockwise"], ["left_to_right", "Clockwise"]];
+const TOUCHPAD_SLOT = 126;
+const perKeyMode = () => { const c = (state && state.capabilities) || {}; return !!c.per_key && !c.lighting; };
+const effectList = () => (perKeyMode() ? PER_KEY_EFFECTS : EFFECTS);
+let selectedKeys = new Set();
+let layoutKey = "";
 const FAN_MODES = [["auto", "Auto"], ["max", "Max"], ["custom", "Custom"]];
 const GPU_LEVEL_NAMES = { normal: "Normal", faster: "Faster", boosted: "Boosted", turbo: "Turbo" };
 const GPU_LEVEL_HINTS = { normal: "Stock clocks", faster: "A mild overclock", boosted: "A stronger overclock", turbo: "The highest preset" };
@@ -140,6 +174,18 @@ async function refresh(first) {
       renderFans();
     }
     lastToggles = JSON.stringify(st.toggles_now);
+    showNotice(false);
+    const live = JSON.stringify([st.turbo, st.cpu_level, st.power, st.hotkey_group]);
+    if (live !== lastLive) {
+      lastLive = live;
+      renderTurbo();
+      if (st.hotkey_group) { keyGroup = st.hotkey_group - 1; renderKeys(); }
+      // The Turbo key or a programmable key changed levels behind the app's back.
+      if (!first && JSON.stringify([st.settings.gpu, st.settings.cpu, st.settings.fans.mode]) !== JSON.stringify([settings.gpu, settings.cpu, settings.fans.mode])) {
+        settings = clone(st.settings);
+        renderAll();
+      }
+    }
     if (st.active_game !== lastGame) { lastGame = st.active_game; renderGames(); if (lastGame) loadRunningApps(); }
   } catch (e) {
     $("noService").hidden = false;
@@ -149,6 +195,8 @@ async function refresh(first) {
 
 function save() {
   clearTimeout(saveTimer);
+  // The per-key keyboard takes a moment per change; send fewer of them.
+  const wait = perKeyMode() ? 500 : 140;
   saveTimer = setTimeout(async () => {
     try {
       state = await invoke("set_settings", { settings });
@@ -157,7 +205,7 @@ function save() {
     } catch (e) {
       setStatus(String(e), true);
     }
-  }, 140);
+  }, wait);
 }
 
 function change(fn) {
@@ -197,7 +245,76 @@ const ROWS = [
 ];
 let keys = [];
 
+function perKeyLayout() {
+  const caps = (state && state.capabilities) || {};
+  const model = (caps.product || "").includes("PT917") ? "PT917-71" : "PH717-71";
+  return { name: `${model}/${caps.per_key_layout ? "uk" : "us"}`, keys: PER_KEY_LAYOUTS[`${model}/${caps.per_key_layout ? "uk" : "us"}`] || [] };
+}
+
+// The per-key keyboard, drawn from the model's own key positions.
+function drawPerKeyboard() {
+  const svg = $("keyboard");
+  const NS = "http://www.w3.org/2000/svg";
+  const { name, keys: layout } = perKeyLayout();
+  layoutKey = name;
+  svg.replaceChildren();
+  const defs = document.createElementNS(NS, "defs");
+  defs.innerHTML = '<filter id="glow" x="-20%" y="-40%" width="140%" height="180%"><feGaussianBlur stdDeviation="6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>';
+  svg.appendChild(defs);
+  const maxX = Math.max(...layout.map((k) => k.x + k.w)), maxY = Math.max(...layout.map((k) => k.y + k.h));
+  const s = Math.min(948 / maxX, 290 / maxY);
+  const ox = (1000 - maxX * s) / 2, oy = (330 - maxY * s) / 2;
+  const deck = document.createElementNS(NS, "rect");
+  deck.setAttribute("class", "deck");
+  deck.setAttribute("x", 6); deck.setAttribute("y", 6);
+  deck.setAttribute("width", 988); deck.setAttribute("height", 318); deck.setAttribute("rx", 18);
+  svg.appendChild(deck);
+  const g = document.createElementNS(NS, "g");
+  g.setAttribute("filter", "url(#glow)");
+  svg.appendChild(g);
+  const labels = document.createElementNS(NS, "g");
+  labels.setAttribute("class", "legends");
+  keys = [];
+  for (const k of layout) {
+    const rect = document.createElementNS(NS, "rect");
+    rect.setAttribute("class", "key");
+    rect.setAttribute("x", (ox + k.x * s + 2).toFixed(1));
+    rect.setAttribute("y", (oy + k.y * s + 2).toFixed(1));
+    rect.setAttribute("width", (k.w * s - 4).toFixed(1));
+    rect.setAttribute("height", (k.h * s - 4).toFixed(1));
+    rect.setAttribute("rx", 5);
+    rect.setAttribute("aria-label", k.l || "Space");
+    rect.onclick = (e) => pickKey(k.t, e.ctrlKey || e.shiftKey || e.metaKey);
+    g.appendChild(rect);
+    if (k.l) {
+      const t = document.createElementNS(NS, "text");
+      t.setAttribute("x", (ox + (k.x + k.w / 2) * s).toFixed(1));
+      t.setAttribute("y", (oy + (k.y + k.h / 2) * s + 4).toFixed(1));
+      t.textContent = k.l;
+      labels.appendChild(t);
+    }
+    keys.push({ el: rect, slot: k.t, zone: 0, nx: (k.x + k.w / 2) / maxX, ny: (k.y + k.h / 2) / maxY, rnd: Math.random() * 6.28 });
+  }
+  svg.appendChild(labels);
+}
+
+function pickKey(slot, add) {
+  if (add) { if (selectedKeys.has(slot)) selectedKeys.delete(slot); else selectedKeys.add(slot); }
+  else selectedKeys = new Set([slot]);
+  if (settings.lighting.effect !== "static") change((s) => (s.lighting.effect = "static"));
+  else renderAll();
+}
+
+// Every slot's colour, so single keys can change without losing the rest.
+function fullKeys(l) {
+  const out = [];
+  for (let i = 0; i <= TOUCHPAD_SLOT; i++) out.push(clone((l.keys && l.keys[i]) || l.colour));
+  return out;
+}
+
 function drawKeyboard() {
+  if (perKeyMode()) return drawPerKeyboard();
+  layoutKey = "";
   const svg = $("keyboard");
   const NS = "http://www.w3.org/2000/svg";
   const u = 48, gap = 5, padX = 26, padY = 22, padGap = 22;
@@ -276,6 +393,30 @@ function keyColour(k, t) {
   const l = settings.lighting;
   const sp = l.speed / 4;
   const dir = l.direction === "left_to_right" ? -1 : 1;
+  const fade = (a) => ({ r: l.colour.r * a, g: l.colour.g * a, b: l.colour.b * a });
+  if (k.slot != null) {
+    // The touchpad light keeps its own colour; effects are the keyboard's.
+    if (k.slot === TOUCHPAD_SLOT) return (l.keys && l.keys[k.slot]) || l.colour;
+    switch (l.effect) {
+      case "static": return (l.keys && l.keys[k.slot]) || l.colour;
+      case "reactive": return fade(0.12 + 0.88 * Math.max(0, Math.sin(t * sp * 2 + k.rnd * 3)) ** 12);
+      case "raindrop": return fade(0.08 + 0.92 * Math.max(0, Math.sin(t * sp * 1.3 + k.rnd * 5)) ** 16);
+      case "ripple": case "circle_marquee": {
+        const d = Math.hypot(k.nx - 0.5, (k.ny - 0.5) * 0.4);
+        return fade(0.1 + 0.9 * Math.max(0, Math.cos((d * 14 - t * sp * 3) % (Math.PI * 2))));
+      }
+      case "marquee": case "hedge": {
+        const pos = ((dir * t * sp * 0.35) % 1.4 + 1.4) % 1.4 - 0.2;
+        return fade(Math.max(0.08, 1 - Math.abs((l.effect === "hedge" ? k.ny : k.nx) - pos) * 4));
+      }
+      case "rainbow_marquee": return hsv(((k.nx * 720 - t * sp * 120) % 360 + 360) % 360, 1, 1);
+      case "spiral": return hsv(((Math.atan2(k.ny - 0.5, (k.nx - 0.5) * 2.5) * 57.3 + dir * t * sp * 90) % 360 + 360) % 360, 1, 1);
+      case "wave": {
+        const along = l.direction === "up" || l.direction === "down" ? k.ny * (l.direction === "up" ? 1 : -1) : k.nx * dir;
+        return hsv(((along * 360 + t * sp * 90) % 360 + 360) % 360, 1, 1);
+      }
+    }
+  }
   switch (l.effect) {
     case "static": return l.zone_on[k.zone] ? l.zones[k.zone] : { r: 0, g: 0, b: 0 };
     case "temperature": return tempColour((state && state.sensors.cpu_temp) || 50);
@@ -319,6 +460,10 @@ function loop(ms) {
 
 function currentColour() {
   const l = settings.lighting;
+  if (perKeyMode() && l.effect === "static") {
+    const first = [...selectedKeys][0];
+    return first != null ? (l.keys && l.keys[first]) || l.colour : l.colour;
+  }
   return l.effect === "static" ? l.zones[selectedZone] : l.colour;
 }
 
@@ -326,11 +471,15 @@ function currentColour() {
 // progress isn't interrupted; the keyboard preview and the laptop follow along.
 function setTargetColour(c) {
   const l = settings.lighting;
-  if (l.effect === "static") { l.zones[selectedZone] = c; l.zone_on[selectedZone] = true; }
+  if (perKeyMode() && l.effect === "static") {
+    if (!selectedKeys.size) { setStatus("Click the keys to colour first"); return; }
+    l.keys = fullKeys(l);
+    for (const k of selectedKeys) l.keys[k] = clone(c);
+  } else if (l.effect === "static") { l.zones[selectedZone] = c; l.zone_on[selectedZone] = true; }
   else l.colour = c;
   paint(performance.now() / 1000);
   const pill = $("zonePills").children[selectedZone];
-  if (pill && l.effect === "static") {
+  if (pill && l.effect === "static" && !perKeyMode()) {
     pill.querySelector(".dot").style.background = hex(c);
     pill.querySelector(".hex").textContent = hex(c);
     pill.querySelector("input").checked = true;
@@ -464,6 +613,7 @@ const picker = {
     };
     $("allZones").onclick = () => change((s) => {
       const c = clone(currentColour());
+      if (perKeyMode()) { s.lighting.keys = fullKeys(s.lighting).map((k, i) => (i === TOUCHPAD_SLOT ? k : clone(c))); return; }
       s.lighting.zones = [0, 1, 2, 3].map(() => clone(c));
       s.lighting.zone_on = [true, true, true, true];
     });
@@ -863,8 +1013,14 @@ function renderLighting() {
   const caps = (state && state.capabilities) || {};
   const isStatic = l.effect === "static";
 
-  segmented($("effects"), EFFECTS, l.effect, (v) => change((s) => (s.lighting.effect = v)), caps.lighting === false);
-  $("effectHint").textContent = EFFECTS.find((e) => e[0] === l.effect)[2];
+  const perKey = perKeyMode();
+  if ((perKey ? perKeyLayout().name : "") !== layoutKey) drawKeyboard();
+  const effects = effectList();
+  segmented($("effects"), effects.map(([k, n]) => [k, n]), l.effect, (v) => change((s) => (s.lighting.effect = v)), !caps.lighting && !caps.per_key);
+  $("effectHint").textContent = (effects.find((e) => e[0] === l.effect) || ["", "", ""])[2];
+  if (perKey) return renderPerKeyLighting(l, caps);
+  $("zonePills").className = "zone-pills";
+  $("allZones").textContent = "Use on all zones";
 
   // zone pills
   $("zonePills").replaceChildren(...[0, 1, 2, 3].map((z) => {
@@ -919,8 +1075,79 @@ function renderLighting() {
   segmented($("brightness"), BRIGHTNESS, l.brightness, (v) => change((s) => (s.lighting.brightness = v)));
   $("directionField").hidden = !["wave", "shifting"].includes(l.effect);
   segmented($("direction"), DIRECTIONS, l.direction, (v) => change((s) => (s.lighting.direction = v)));
+  $("extraLights").hidden = true;
 
   paint(performance.now() / 1000);
+}
+
+function renderPerKeyLighting(l, caps) {
+  const isStatic = l.effect === "static";
+  // Selection tools instead of zone pills.
+  const bar = $("zonePills");
+  bar.className = "key-tools";
+  bar.hidden = !isStatic;
+  const btn = (label, fn) => { const b = document.createElement("button"); b.type = "button"; b.className = "ghost"; b.textContent = label; b.onclick = fn; return b; };
+  const allSlots = keys.map((k) => k.slot);
+  const info = document.createElement("span");
+  info.className = "hint";
+  info.textContent = selectedKeys.size ? `${selectedKeys.size} key${selectedKeys.size > 1 ? "s" : ""} selected` : "Click a key to pick it; Ctrl or Shift + click picks more.";
+  bar.replaceChildren(
+    btn("Select all", () => { selectedKeys = new Set(allSlots); renderAll(); }),
+    btn("Select none", () => { selectedKeys.clear(); renderAll(); }),
+    info);
+  for (const k of keys) k.el.classList.toggle("picked", isStatic && selectedKeys.has(k.slot));
+
+  const usesColour = isStatic || PER_KEY_COLOURED.includes(l.effect);
+  $("colourField").hidden = !usesColour;
+  const current = currentColour();
+  $("colourTitle").textContent = isStatic ? (selectedKeys.size ? "Colour of the selected keys" : "Key colour") : "Colour";
+  $("swatches").replaceChildren(...BASIC.map((h) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "swatch"; b.style.background = h;
+    b.setAttribute("role", "radio"); b.setAttribute("aria-label", h);
+    b.setAttribute("aria-checked", String(hex(current) === h));
+    b.onclick = () => { setTargetColour(rgb(h)); renderAll(); };
+    return b;
+  }));
+  $("allZones").hidden = !isStatic;
+  $("allZones").textContent = "Use on all keys";
+  if (!picker.dragging) picker.sync(current);
+
+  $("speedField").hidden = isStatic;
+  $("speed").value = l.speed;
+  $("speed").oninput = () => change((s) => (s.lighting.speed = Number($("speed").value)));
+  segmented($("brightness"), BRIGHTNESS, l.brightness, (v) => change((s) => (s.lighting.brightness = v)));
+  const dirs = l.effect === "wave" ? WAVE_DIRECTIONS : l.effect === "spiral" ? SPIRAL_DIRECTIONS : null;
+  $("directionField").hidden = !dirs;
+  if (dirs) segmented($("direction"), dirs, dirs.some(([v]) => v === l.direction) ? l.direction : dirs[0][0], (v) => change((s) => (s.lighting.direction = v)));
+  renderExtraLights(l, caps);
+  paint(performance.now() / 1000);
+}
+
+// Heat pipe (Helios 700), fan window (Triton 900) and touchpad lights.
+function renderExtraLights(l, caps) {
+  const e = l.extras || {};
+  const rows = [];
+  const colourInput = (value, label, onPick) => {
+    const i = document.createElement("input");
+    i.type = "color"; i.value = hex(value || l.colour).toLowerCase();
+    i.setAttribute("aria-label", label);
+    i.onchange = () => onPick(rgb(i.value.toUpperCase()));
+    return i;
+  };
+  const light = (title, desc, on, setOn, colour, setColour) => {
+    const row = switchRow(title, desc, on, false, (v) => change((s) => { s.lighting.extras = s.lighting.extras || {}; setOn(s.lighting.extras, v); }));
+    if (setColour) row.querySelector("p").append(" ", colourInput(colour, `${title} colour`, (c) => change((s) => setColour(s.lighting, c))));
+    rows.push(row);
+  };
+  if (caps.heat_pipe_light) light("Heat pipe light", "The light strip over the heat pipes.", e.heat_pipe !== false,
+    (x, v) => (x.heat_pipe = v), e.heat_pipe_colour, (s, c) => { s.extras = s.extras || {}; s.extras.heat_pipe_colour = c; });
+  if (caps.fan_light) light("Fan light", "The light behind the fan window.", e.fan_led !== false,
+    (x, v) => (x.fan_led = v), e.fan_led_colour, (s, c) => { s.extras = s.extras || {}; s.extras.fan_led_colour = c; });
+  if (caps.touchpad_light) light("Touchpad light", "The light around the touchpad.", e.touchpad !== false,
+    (x, v) => (x.touchpad = v), (l.keys || [])[TOUCHPAD_SLOT], caps.touchpad_light === 2 ? (s, c) => { s.keys = fullKeys(s); s.keys[TOUCHPAD_SLOT] = c; } : null);
+  $("extraLights").replaceChildren(...rows);
+  $("extraLights").hidden = rows.length === 0;
 }
 
 function renderFans() {
@@ -1050,11 +1277,11 @@ function renderSections() {
   for (const [page, visible] of Object.entries(show)) {
     document.querySelector(`.tab[data-page="${page}"]`).hidden = !visible;
   }
-  $("perKeyNote").hidden = !(caps.per_key && !caps.lighting);
-  $("lightingExp").hidden = !(caps.lighting && isExp("lighting"));
-  const TITLES = { fans: "Fans", gpu: "GPU overclock", monitor: "Monitor", games: "Games" };
+  $("perKeyNote").hidden = true;
+  $("lightingExp").hidden = !((caps.lighting || caps.per_key) && isExp("lighting"));
+  const TITLES = { fans: "Fans", gpu: "GPU overclock", monitor: "Monitor", games: "Games", keys: "Keys" };
   document.querySelectorAll("h1[data-title]").forEach((h) => (h.textContent = expTitle(TITLES[h.dataset.title], h.dataset.title)));
-  document.querySelectorAll("#page-lighting .stage, #page-lighting .controls").forEach((el) => (el.hidden = !caps.lighting));
+  document.querySelectorAll("#page-lighting .stage, #page-lighting .controls").forEach((el) => (el.hidden = !caps.lighting && !caps.per_key));
   const current = document.querySelector(".tab[aria-current=page]");
   if (current && current.hidden) {
     const first = [...document.querySelectorAll(".tab")].find((t) => !t.hidden);
@@ -1068,10 +1295,310 @@ function renderAll() {
   renderLighting();
   renderFans();
   renderGpu();
+  renderTurbo();
   renderSettings();
+  renderTurboKeySetting();
+  renderKeys();
   renderGames();
   $("keepApplied").checked = settings.keep_applied;
   renderLive();
+}
+
+
+/* ---------- Turbo and CPU level (GPU page) ---------- */
+
+const TURBO_ACTIONS = [
+  ["performance", "GPU Turbo and fans Max"],
+  ["overclock", "GPU Turbo only"],
+  ["fans", "Fans Max only"],
+  ["off", "Nothing"],
+];
+const TURBO_HINTS = {
+  performance: "As in PredatorSense: the highest GPU level and both fans on Max. Only on the charger. Press it again to go back.",
+  overclock: "The highest GPU level, with the fans left as they are. Only on the charger. Press it again to go back.",
+  fans: "Only runs the fans on Max. Press it again to go back.",
+  off: "The Turbo key does nothing.",
+};
+const levelName = (m) => GPU_LEVEL_NAMES[m] || m;
+
+function powerText() {
+  const p = state && state.power;
+  if (!p) return "";
+  return p[0] ? `on the charger, battery ${p[1]}%` : `on battery, ${p[1]}%`;
+}
+
+function renderTurbo() {
+  const caps = (state && state.capabilities) || {};
+  const levels = caps.gpu_levels || [];
+
+  // CPU power level that follows the GPU level (PredatorSense's behaviour).
+  $("cpuFollows").hidden = !caps.cpu_follows_gpu && !caps.fan_table;
+  if (!caps.cpu_follows_gpu && caps.fan_table) {
+    $("cpuFollows").textContent = "The fans' built-in curve follows the GPU level, as in PredatorSense: a higher level lets them spin up sooner.";
+  } else if (caps.cpu_follows_gpu) {
+    const now = state.cpu_level != null && levels[state.cpu_level] ? ` Right now: ${levelName(levels[state.cpu_level].mode)} (${powerText()}).` : "";
+    $("cpuFollows").textContent = `${isExp("gpu") ? "(experimental) " : ""}The CPU's power level follows the GPU level, as in PredatorSense, and the fans' curve follows both. It's only raised on the charger with the battery at 40% or more; otherwise it stays at Normal.${now}`;
+  }
+
+  // Separate CPU overclock levels (unlocked HK processors).
+  const cpu = caps.cpu_levels || [];
+  $("cpuField").hidden = cpu.length === 0;
+  if (cpu.length) {
+    $("cpuTitle").textContent = expTitle("CPU overclock", "gpu");
+    segmented($("cpuLevels"), cpu.map((m) => [m, levelName(m)]), settings.cpu || "normal", (v) => change((s) => (s.cpu = v)));
+    const now = state.cpu_level != null && cpu[state.cpu_level] ? ` Right now: ${levelName(cpu[state.cpu_level])} (${powerText()}).` : "";
+    $("cpuHint").textContent = `PredatorSense's CPU overclock levels for this laptop's unlocked processor. They only apply on the charger with the battery at 40% or more; otherwise the CPU runs at Normal.${now}`;
+  }
+
+  // Turbo (the key, or this button).
+  $("turboCard").hidden = !caps.turbo_key;
+  if (caps.turbo_key) {
+    const on = !!state.turbo;
+    const action = settings.turbo_key || "performance";
+    $("turboCard").dataset.on = String(on);
+    $("turboTitle").textContent = expTitle(on ? "Turbo is on" : "Turbo", "gpu");
+    $("turboText").textContent = action === "off"
+      ? "The Turbo key is set to do nothing (Settings → Turbo key)."
+      : `${TURBO_HINTS[action]} The laptop's Turbo key does the same.`;
+    $("turboBtn").textContent = on ? "Turn off" : "Turn on";
+    $("turboBtn").disabled = action === "off";
+  }
+}
+
+async function setTurbo(on) {
+  try {
+    state = await invoke("set_turbo", { on });
+    renderTurbo();
+  } catch (e) { setStatus(String(e), true); }
+}
+
+function renderTurboKeySetting() {
+  const caps = (state && state.capabilities) || {};
+  $("turboKeyField").hidden = !caps.turbo_key;
+  if (!caps.turbo_key) return;
+  const action = settings.turbo_key || "performance";
+  segmented($("turboKey"), TURBO_ACTIONS, action, (v) => change((s) => { s.turbo_key = v; }));
+  $("turboKeyHint").textContent = TURBO_HINTS[action];
+}
+
+/* ---------- programmable keys ---------- */
+
+let keyGroup = 0;
+const KEY_ACTIONS = [
+  ["none", "Nothing"],
+  ["performance", "System performance Normal ⇄ Extreme"],
+  ["gpu_levels", "Switch GPU level"],
+  ["cpu_levels", "Switch CPU level"],
+  ["fan_modes", "Switch fan mode"],
+  ["turbo", "Turbo on/off"],
+  ["win_key", "Windows and Menu keys on/off"],
+  ["lcd_overdrive", "LCD overdrive on/off"],
+  ["sticky_keys", "Sticky Keys on/off"],
+  ["launch_app", "Open a program"],
+  ["macro", "Macro (type keys)"],
+  ["open_app", "Open OpenSenses"],
+];
+
+// The switching orders PredatorSense offered, built from this laptop's levels.
+function levelCycles(levels) {
+  const names = levels.map(levelName);
+  const out = [];
+  if (levels.length >= 2) out.push([levels, names.join(" → ")]);
+  const pair = (a, b) => [[levels[a], levels[b]], `${names[a]} ⇄ ${names[b]}`];
+  if (levels.length >= 3) out.push(pair(0, levels.length - 1), pair(0, 1), pair(1, levels.length - 1));
+  else if (levels.length === 2) out.push(pair(0, 1));
+  return out;
+}
+const FAN_CYCLES = [
+  [["auto", "max", "custom"], "Auto → Max → Custom"],
+  [["auto", "max"], "Auto ⇄ Max"],
+  [["max", "custom"], "Max ⇄ Custom"],
+  [["auto", "custom"], "Auto ⇄ Custom"],
+];
+
+function hotkeyGroups(caps) {
+  const n = caps.hotkey_keys || 0;
+  const groups = clone(settings.hotkeys || []);
+  while (groups.length < 3) groups.push({ name: "", keys: [] });
+  for (const g of groups) while (g.keys.length < n) g.keys.push({ kind: "none" });
+  return groups;
+}
+
+function editKey(k, fn) {
+  const caps = state.capabilities || {};
+  change((s) => {
+    s.hotkeys = hotkeyGroups(caps);
+    fn(s.hotkeys[keyGroup], k);
+  });
+}
+
+const prettyKey = (code) => code.replace(/^Key/, "").replace(/^Digit/, "").replace(/^Numpad/, "Num ").replace(/(Left|Right)$/, "").replace(/^Arrow/, "") || code;
+function macroText(steps) {
+  const parts = [];
+  for (const st of steps || []) {
+    if (!st.code) parts.push(`${st.delay_ms} ms`);
+    else if (st.down) parts.push(prettyKey(st.code));
+  }
+  return parts.join(" · ");
+}
+
+function keyCard(action, k, caps) {
+  const card = document.createElement("div");
+  card.className = "game";
+  const head = document.createElement("div");
+  head.className = "game-head";
+  const num = document.createElement("span");
+  num.className = "key-num";
+  num.textContent = `P${k + 1}`;
+  const names = document.createElement("span");
+  names.className = "names";
+  names.innerHTML = "<h3></h3>";
+  names.querySelector("h3").textContent = `Key ${k + 1}`;
+  const test = document.createElement("button");
+  test.type = "button"; test.className = "ghost"; test.textContent = "Try it";
+  test.title = "Does what the key would do now, without pressing it";
+  test.style.marginLeft = "auto";
+  test.disabled = action.kind === "none";
+  test.onclick = async () => {
+    try {
+      state = await invoke("test_key", { detail: [7, 2, k + 1, keyGroup + 1, 0, 0, 0, 0] });
+      showNotice(true);
+      renderTurbo();
+    } catch (e) { setStatus(String(e), true); }
+  };
+  head.append(num, names, test);
+  card.appendChild(head);
+
+  const rows = document.createElement("div");
+  rows.className = "game-rows";
+  const row = (label, ...content) => {
+    const l = document.createElement("span");
+    l.textContent = label;
+    const d = document.createElement("div"); d.className = "detail"; d.append(...content);
+    rows.append(l, d);
+  };
+  const toggles = caps.toggles || [];
+  const available = KEY_ACTIONS.filter(([kind]) => {
+    if (kind === "gpu_levels" || kind === "performance") return (caps.gpu_levels || []).length > 1;
+    if (kind === "cpu_levels") return (caps.cpu_levels || []).length > 1;
+    if (kind === "fan_modes") return (caps.fans || []).length > 0;
+    if (kind === "turbo") return caps.turbo_key;
+    if (kind === "win_key" || kind === "lcd_overdrive") return toggles.includes(kind);
+    if (kind === "sticky_keys") return caps.sticky_keys;
+    return true;
+  });
+  row("Does", choice(available, action.kind, (v) => editKey(k, (g) => {
+    const gpu = (caps.gpu_levels || []).map((l) => l.mode);
+    if (v === "gpu_levels") g.keys[k] = { kind: v, cycle: levelCycles(gpu)[0][0] };
+    else if (v === "cpu_levels") g.keys[k] = { kind: v, cycle: levelCycles(caps.cpu_levels || [])[0][0] };
+    else if (v === "fan_modes") g.keys[k] = { kind: v, cycle: FAN_CYCLES[1][0] };
+    else if (v === "launch_app") g.keys[k] = { kind: v, target: "" };
+    else if (v === "macro") g.keys[k] = { kind: v, steps: [] };
+    else g.keys[k] = { kind: v };
+  }), `What key ${k + 1} does`));
+
+  if (["gpu_levels", "cpu_levels", "fan_modes"].includes(action.kind)) {
+    const cycles = action.kind === "fan_modes" ? FAN_CYCLES
+      : levelCycles(action.kind === "gpu_levels" ? (caps.gpu_levels || []).map((l) => l.mode) : caps.cpu_levels || []);
+    const current = JSON.stringify(action.cycle || []);
+    const items = cycles.map(([c, label], i) => [String(i), label]);
+    const sel = cycles.findIndex(([c]) => JSON.stringify(c) === current);
+    row("Order", choice(items, String(Math.max(sel, 0)), (v) => editKey(k, (g) => (g.keys[k].cycle = cycles[Number(v)][0])), "Switching order"));
+  }
+  if (action.kind === "launch_app") {
+    const input = document.createElement("input");
+    input.className = "key-target";
+    input.value = action.target || "";
+    input.placeholder = IS_WINDOWS ? "A program, file or web address" : "A program, .desktop file, file or web address";
+    input.spellcheck = false;
+    input.setAttribute("aria-label", `Program for key ${k + 1}`);
+    input.onchange = () => editKey(k, (g) => (g.keys[k].target = input.value.trim()));
+    const browse = document.createElement("button");
+    browse.type = "button"; browse.className = "ghost"; browse.textContent = "Browse…";
+    browse.onclick = async () => {
+      const path = await pickProgram();
+      if (path) editKey(k, (g) => (g.keys[k].target = path));
+    };
+    row("Opens", input, browse);
+  }
+  if (action.kind === "macro") {
+    const text = document.createElement("span");
+    text.textContent = (action.steps || []).length ? macroText(action.steps) : "Nothing recorded yet";
+    const rec = document.createElement("button");
+    rec.type = "button"; rec.className = "ghost"; rec.textContent = (action.steps || []).length ? "Record again" : "Record";
+    rec.onclick = () => recordMacro(k);
+    row("Types", text, rec);
+  }
+  if (action.kind === "performance") row("", Object.assign(document.createElement("span"), { textContent: "Highest GPU (and CPU) level, or back to Normal. Extreme needs the charger." }));
+  card.appendChild(rows);
+  return card;
+}
+
+function renderKeys() {
+  const caps = (state && state.capabilities) || {};
+  const n = caps.hotkey_keys || 0;
+  document.querySelector('.tab[data-page="keys"]').hidden = n === 0;
+  if (!n) return;
+  const groups = hotkeyGroups(caps);
+  segmented($("keyGroups"), [0, 1, 2].map((i) => [i, groups[i].name || `Group ${i + 1}`]), keyGroup, (v) => { keyGroup = v; renderKeys(); });
+  const g = groups[keyGroup];
+  $("groupName").value = g.name || "";
+  $("groupName").placeholder = `Group ${keyGroup + 1}`;
+  $("keyList").replaceChildren(...g.keys.slice(0, n).map((a, k) => keyCard(a, k, caps)));
+  const active = state.hotkey_group ? ` The laptop is on group ${state.hotkey_group} now.` : "";
+  $("keysIntro").textContent = `The ${n} programmable keys above the keyboard. Each one can do something different in each of the three groups; the laptop's group key switches between them.${active}`;
+}
+
+// Macro recorder: records key presses in the dialog, as KeyboardEvent.code names.
+const macro = { key: -1, steps: [], last: 0, held: new Set() };
+function recordMacro(k) {
+  macro.key = k; macro.steps = []; macro.last = 0; macro.held.clear();
+  $("mdKeys").textContent = "";
+  $("macroDialog").hidden = false;
+  $("mdDone").focus();
+}
+function macroEvent(e) {
+  if ($("macroDialog").hidden) return;
+  if (e.repeat || !e.code || e.code === "Unidentified") { e.preventDefault(); return; }
+  // Let the dialog's buttons work with the mouse only; every key is recorded.
+  e.preventDefault();
+  e.stopPropagation();
+  const down = e.type === "keydown";
+  if (!down && !macro.held.has(e.code)) return;
+  if (down) macro.held.add(e.code); else macro.held.delete(e.code);
+  const now = performance.now();
+  if ($("mdPauses").checked && macro.last && now - macro.last >= 30) {
+    macro.steps.push({ code: null, down: false, delay_ms: Math.min(10000, Math.round((now - macro.last) / 10) * 10) });
+  }
+  macro.last = now;
+  macro.steps.push({ code: e.code, down, delay_ms: 0 });
+  if (macro.steps.length >= 50) {
+    macro.steps.length = 50;
+    $("mdText").textContent = "That's the 50-step limit. Click Done to keep it.";
+  }
+  $("mdKeys").textContent = macroText(macro.steps);
+}
+document.addEventListener("keydown", macroEvent, true);
+document.addEventListener("keyup", macroEvent, true);
+$("mdCancel").onclick = () => ($("macroDialog").hidden = true);
+$("mdClear").onclick = () => { macro.steps = []; macro.last = 0; macro.held.clear(); $("mdKeys").textContent = ""; };
+$("mdDone").onclick = () => {
+  $("macroDialog").hidden = true;
+  // Release anything still held when the recording stopped.
+  for (const code of macro.held) macro.steps.push({ code, down: false, delay_ms: 0 });
+  const steps = macro.steps.slice(0, 50);
+  editKey(macro.key, (g) => (g.keys[macro.key] = { kind: "macro", steps }));
+};
+$("groupName").onchange = () => editKey(0, (g) => (g.name = $("groupName").value.trim()));
+$("turboBtn").onclick = () => setTurbo(!(state && state.turbo));
+
+// Messages from the service (Turbo key, key actions) shown in the status bar.
+let lastNotice = null;
+function showNotice(force) {
+  const n = state && state.notice;
+  if (!n) return;
+  if (lastNotice !== null && (force || n[0] !== lastNotice)) setStatus(n[1]);
+  lastNotice = n[0];
 }
 
 /* ---------- wiring ---------- */
