@@ -19,7 +19,11 @@ function mockInvoke(cmd, args) {
       },
       sensors: {}, capabilities: { lighting: true, fans: true, gpu_modes: true, sensors: true },
       backend: "preview", errors: [], overheat_guard: false,
+      toggles_now: { lcd_overdrive: false, boot_animation: false, backlight_timeout: true, win_key: true },
     };
+    mock.settings.toggles = { lcd_overdrive: null, boot_animation: null, backlight_timeout: null, win_key: null };
+    mock.settings.fahrenheit = false;
+    mock.sticky = false;
   }
   if (location.search.includes("noservice")) return Promise.reject("background service is not running");
   const t = Date.now() / 1000;
@@ -27,7 +31,12 @@ function mockInvoke(cmd, args) {
     cpu_temp: Math.round(66 + 6 * Math.sin(t / 7)), gpu_temp: Math.round(58 + 4 * Math.sin(t / 9)),
     sys_temp: 49, cpu_fan_rpm: Math.round(3000 + 300 * Math.sin(t / 5)), gpu_fan_rpm: Math.round(3450 + 250 * Math.sin(t / 6)),
   };
-  if (cmd === "set_settings") mock.settings = JSON.parse(JSON.stringify(args.settings));
+  if (cmd === "get_sticky_keys") return Promise.resolve(mock.sticky);
+  if (cmd === "set_sticky_keys") { mock.sticky = args.on; return Promise.resolve(null); }
+  if (cmd === "set_settings") {
+    mock.settings = JSON.parse(JSON.stringify(args.settings));
+    for (const [k, v] of Object.entries(mock.settings.toggles)) if (v != null) mock.toggles_now[k] = v;
+  }
   return Promise.resolve(JSON.parse(JSON.stringify(mock)));
 }
 
@@ -37,6 +46,7 @@ let state = null;        // last state from the service
 let settings = null;     // what the user is editing
 let selectedZone = 0;
 let saveTimer = null;
+let lastToggles = "";
 const history = { cpu_temp: [], gpu_temp: [], sys_temp: [], cpu_fan_rpm: [], gpu_fan_rpm: [] };
 const $ = (id) => document.getElementById(id);
 
@@ -85,7 +95,14 @@ async function refresh(first) {
       renderAll();
     }
     renderLive();
-    if (first) showErrors(st);
+    if (first) {
+      showErrors(st);
+      try { stickyKeys = await invoke("get_sticky_keys"); } catch { stickyKeys = null; }
+      renderSettings();
+    } else if (JSON.stringify(st.toggles_now) !== lastToggles) {
+      renderSettings();
+    }
+    lastToggles = JSON.stringify(st.toggles_now);
   } catch (e) {
     $("noService").hidden = false;
     $("nsDetail").textContent = String(e);
@@ -258,6 +275,213 @@ function loop(ms) {
   requestAnimationFrame(loop);
 }
 
+/* ---------- colour picker ---------- */
+
+function currentColour() {
+  const l = settings.lighting;
+  return l.effect === "static" ? l.zones[selectedZone] : l.colour;
+}
+
+// Changes the colour being edited without rebuilding the page, so a drag in
+// progress isn't interrupted; the keyboard preview and the laptop follow along.
+function setTargetColour(c) {
+  const l = settings.lighting;
+  if (l.effect === "static") { l.zones[selectedZone] = c; l.zone_on[selectedZone] = true; }
+  else l.colour = c;
+  paint(performance.now() / 1000);
+  const pill = $("zonePills").children[selectedZone];
+  if (pill && l.effect === "static") {
+    pill.querySelector(".dot").style.background = hex(c);
+    pill.querySelector(".hex").textContent = hex(c);
+    pill.querySelector("input").checked = true;
+  }
+  save();
+}
+
+function rgbToHsv({ r, g, b }) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+  }
+  return { h, s: max ? d / max : 0, v: max };
+}
+
+function hsvToRgb({ h, s, v }) {
+  const c = hsv(h, s, v);
+  return { r: Math.round(c.r), g: Math.round(c.g), b: Math.round(c.b) };
+}
+
+function parseHex(text) {
+  let t = text.trim().replace(/^#/, "");
+  if (/^[0-9a-f]{3}$/i.test(t)) t = t.split("").map((ch) => ch + ch).join("");
+  return /^[0-9a-f]{6}$/i.test(t) ? rgb("#" + t) : null;
+}
+
+const picker = {
+  hsv: { h: 0, s: 1, v: 1 },
+  dragging: false,
+
+  // Shows a colour that was set from elsewhere (zone switch, swatch, hex).
+  sync(c) {
+    const next = rgbToHsv(c);
+    if (next.s === 0 || next.v === 0) next.h = this.hsv.h; // greys and black keep the hue
+    this.hsv = next;
+    this.draw(c);
+  },
+
+  draw(c) {
+    const { h, s, v } = this.hsv;
+    $("sv").style.setProperty("--hue-colour", `hsl(${h}, 100%, 50%)`);
+    $("svHandle").style.left = `${s * 100}%`;
+    $("svHandle").style.top = `${(1 - v) * 100}%`;
+    $("svHandle").style.background = hex(c);
+    $("hueHandle").style.left = `${(h / 360) * 100}%`;
+    $("hueHandle").style.background = `hsl(${h}, 100%, 50%)`;
+    $("chip").style.background = hex(c);
+    $("hue").setAttribute("aria-valuenow", String(Math.round(h)));
+    const input = $("hexInput");
+    if (document.activeElement !== input) { input.value = hex(c); input.removeAttribute("aria-invalid"); }
+    document.querySelectorAll(".swatch").forEach((b) => b.setAttribute("aria-checked", String(b.getAttribute("aria-label") === hex(c))));
+  },
+
+  commit() {
+    const c = hsvToRgb(this.hsv);
+    this.draw(c);
+    setTargetColour(c);
+  },
+
+  // Press anywhere to move the circle there, then keep dragging to fine-tune.
+  attach(el, onMove) {
+    el.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      el.focus();
+      el.setPointerCapture(e.pointerId);
+      this.dragging = true;
+      onMove(e);
+    });
+    el.addEventListener("pointermove", (e) => { if (this.dragging && el.hasPointerCapture(e.pointerId)) onMove(e); });
+    const end = (e) => {
+      if (!this.dragging) return;
+      this.dragging = false;
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      renderAll();
+    };
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
+  },
+
+  init() {
+    const sv = $("sv"), hue = $("hue");
+    const clamp = (x) => Math.min(1, Math.max(0, x));
+    this.attach(sv, (e) => {
+      const r = sv.getBoundingClientRect();
+      this.hsv.s = clamp((e.clientX - r.left) / r.width);
+      this.hsv.v = 1 - clamp((e.clientY - r.top) / r.height);
+      this.commit();
+    });
+    this.attach(hue, (e) => {
+      const r = hue.getBoundingClientRect();
+      this.hsv.h = clamp((e.clientX - r.left) / r.width) * 359.9;
+      this.commit();
+    });
+    sv.addEventListener("keydown", (e) => {
+      const step = e.shiftKey ? 0.1 : 0.02;
+      const moves = { ArrowLeft: ["s", -step], ArrowRight: ["s", step], ArrowUp: ["v", step], ArrowDown: ["v", -step] };
+      if (!moves[e.key]) return;
+      e.preventDefault();
+      const [k, d] = moves[e.key];
+      this.hsv[k] = clamp(this.hsv[k] + d);
+      this.commit();
+    });
+    hue.addEventListener("keydown", (e) => {
+      const d = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+      if (!d) return;
+      e.preventDefault();
+      this.hsv.h = (this.hsv.h + d * (e.shiftKey ? 15 : 3) + 360) % 360;
+      this.commit();
+    });
+
+    const input = $("hexInput");
+    input.addEventListener("input", () => {
+      const c = parseHex(input.value);
+      input.setAttribute("aria-invalid", String(!c && input.value.trim() !== ""));
+      if (c) { this.sync(c); setTargetColour(c); }
+    });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+    input.addEventListener("blur", () => renderAll());
+    input.addEventListener("focus", () => input.select());
+
+    $("copyHex").onclick = async () => {
+      const text = hex(currentColour());
+      try { await navigator.clipboard.writeText(text); }
+      catch { input.focus(); input.select(); document.execCommand("copy"); }
+      setStatus(`Copied ${text}`);
+    };
+    $("allZones").onclick = () => change((s) => {
+      const c = clone(currentColour());
+      s.lighting.zones = [0, 1, 2, 3].map(() => clone(c));
+      s.lighting.zone_on = [true, true, true, true];
+    });
+  },
+};
+
+/* ---------- temperature unit ---------- */
+
+const toUnit = (c) => (c == null ? null : settings && settings.fahrenheit ? Math.round((c * 9) / 5 + 32) : c);
+const unitLabel = () => (settings && settings.fahrenheit ? "°F" : "°C");
+
+/* ---------- settings page ---------- */
+
+const TOGGLES = [
+  ["backlight_timeout", "Turn keyboard lighting off when idle", "The lighting goes dark after 30 seconds without typing and comes back with the next key press."],
+  ["lcd_overdrive", "LCD overdrive", "Makes the laptop screen respond faster, so fast motion in games looks less blurry."],
+  ["win_key", "Windows and Menu keys", "Turn off to block both keys, so a stray press can't pull you out of a game."],
+  ["boot_animation", "Boot animation and sound", "Plays the Predator logo animation and start-up sound when the laptop turns on."],
+];
+let stickyKeys = null;
+
+function switchRow(title, desc, checked, disabled, onChange) {
+  const row = document.createElement("div");
+  row.className = "toggle-row";
+  row.innerHTML = `<h3></h3><p></p><label class="sw"><input type="checkbox" role="switch"><span></span></label>`;
+  row.querySelector("h3").textContent = title;
+  row.querySelector("p").textContent = desc;
+  const input = row.querySelector("input");
+  input.setAttribute("aria-label", title);
+  input.checked = !!checked;
+  input.disabled = !!disabled;
+  input.onchange = () => onChange(input.checked);
+  return row;
+}
+
+function renderSettings() {
+  const caps = (state && state.capabilities) || {};
+  const now = (state && state.toggles_now) || {};
+  const rows = TOGGLES.map(([key, title, desc]) => {
+    const chosen = settings.toggles ? settings.toggles[key] : null;
+    // The backlight timeout can't be read back reliably; it's on from the factory.
+    const fallback = key === "backlight_timeout" ? true : null;
+    const value = chosen != null ? chosen : now[key] != null ? now[key] : fallback;
+    return switchRow(title, desc, value, caps.toggles === false,
+      (on) => change((s) => { s.toggles = s.toggles || {}; s.toggles[key] = on; }));
+  });
+  rows.push(switchRow("Sticky Keys",
+    "A Windows accessibility feature: Shift, Ctrl, Alt and the Windows key stay pressed until you press the next key. This is a setting of your Windows account.",
+    stickyKeys, stickyKeys == null,
+    async (on) => {
+      try { await invoke("set_sticky_keys", { on }); stickyKeys = on; setStatus(on ? "Sticky Keys on" : "Sticky Keys off"); }
+      catch (e) { setStatus(String(e), true); }
+    }));
+  $("toggles").replaceChildren(...rows);
+  segmented($("unit"), [[false, "Celsius (°C)"], [true, "Fahrenheit (°F)"]], !!settings.fahrenheit,
+    (v) => change((s) => (s.fahrenheit = v)));
+}
+
 /* ---------- rendering ---------- */
 
 function renderLighting() {
@@ -302,29 +526,17 @@ function renderLighting() {
   $("colourField").hidden = !usesColour;
   const current = isStatic ? l.zones[selectedZone] : l.colour;
   $("colourTitle").textContent = isStatic ? `Zone ${selectedZone + 1} colour` : "Colour";
-  const setColour = (h) => change((s) => {
-    if (s.lighting.effect === "static") { s.lighting.zones[selectedZone] = rgb(h); s.lighting.zone_on[selectedZone] = true; }
-    else s.lighting.colour = rgb(h);
-  });
   const sw = BASIC.map((h) => {
     const b = document.createElement("button");
     b.type = "button"; b.className = "swatch"; b.style.background = h;
     b.setAttribute("role", "radio"); b.setAttribute("aria-label", h);
     b.setAttribute("aria-checked", String(hex(current) === h));
-    b.onclick = () => setColour(h);
+    b.onclick = () => { setTargetColour(rgb(h)); renderAll(); };
     return b;
   });
-  const custom = document.createElement("label");
-  custom.className = "custom-colour";
-  custom.innerHTML = '<input type="color"> Any colour';
-  const ci = custom.querySelector("input");
-  ci.value = hex(current).toLowerCase();
-  ci.oninput = () => setColour(ci.value.toUpperCase());
-  const allOn = document.createElement("button");
-  allOn.type = "button"; allOn.className = "ghost"; allOn.textContent = "Use on all zones";
-  allOn.hidden = !isStatic;
-  allOn.onclick = () => change((s) => { s.lighting.zones = [0, 1, 2, 3].map(() => clone(current)); s.lighting.zone_on = [true, true, true, true]; });
-  $("swatches").replaceChildren(...sw, custom, allOn);
+  $("swatches").replaceChildren(...sw);
+  $("allZones").hidden = !isStatic;
+  if (!picker.dragging) picker.sync(current);
 
   // speed / brightness / direction
   $("speedField").hidden = isStatic || l.effect === "temperature";
@@ -380,9 +592,9 @@ function renderGpu() {
 }
 
 const GAUGES = [
-  ["cpu_temp", "CPU temperature", "°C", 30, 100],
-  ["gpu_temp", "GPU temperature", "°C", 30, 100],
-  ["sys_temp", "System temperature", "°C", 20, 80],
+  ["cpu_temp", "CPU temperature", "temp", 30, 100],
+  ["gpu_temp", "GPU temperature", "temp", 30, 100],
+  ["sys_temp", "System temperature", "temp", 20, 80],
   ["cpu_fan_rpm", "CPU fan", "RPM", 0, 6000],
   ["gpu_fan_rpm", "GPU fan", "RPM", 0, 6000],
 ];
@@ -419,17 +631,17 @@ function renderLive() {
     if (s[id] != null) { history[id].push(s[id]); if (history[id].length > 90) history[id].shift(); }
   }
   const fmt = (v, unit) => (v == null ? "–" : `${v.toLocaleString()}<small>${unit}</small>`);
-  $("railTemps").innerHTML = `CPU <b>${s.cpu_temp ?? "–"}°</b><br>GPU <b>${s.gpu_temp ?? "–"}°</b>`;
+  $("railTemps").innerHTML = `CPU <b>${toUnit(s.cpu_temp) ?? "–"}°</b><br>GPU <b>${toUnit(s.gpu_temp) ?? "–"}°</b>`;
   for (const [id, , unit, lo, hi] of GAUGES) {
     const v = document.querySelector(`[data-gauge="${id}"]`);
-    if (v) v.innerHTML = fmt(s[id], unit);
+    if (v) v.innerHTML = unit === "temp" ? fmt(toUnit(s[id]), unitLabel()) : fmt(s[id], unit);
     const c = document.querySelector(`[data-spark="${id}"]`);
     if (c) spark(c, history[id], lo, hi);
   }
   document.querySelectorAll('[data-live="cpu_fan_rpm"]').forEach((e) => (e.innerHTML = fmt(s.cpu_fan_rpm, "RPM")));
   document.querySelectorAll('[data-live="gpu_fan_rpm"]').forEach((e) => (e.innerHTML = fmt(s.gpu_fan_rpm, "RPM")));
-  document.querySelectorAll('[data-live="cpu_temp_line"]').forEach((e) => (e.textContent = s.cpu_temp != null ? `CPU at ${s.cpu_temp} °C` : ""));
-  document.querySelectorAll('[data-live="gpu_temp_line"]').forEach((e) => (e.textContent = s.gpu_temp != null ? `GPU at ${s.gpu_temp} °C` : ""));
+  document.querySelectorAll('[data-live="cpu_temp_line"]').forEach((e) => (e.textContent = s.cpu_temp != null ? `CPU at ${toUnit(s.cpu_temp)} ${unitLabel()}` : ""));
+  document.querySelectorAll('[data-live="gpu_temp_line"]').forEach((e) => (e.textContent = s.gpu_temp != null ? `GPU at ${toUnit(s.gpu_temp)} ${unitLabel()}` : ""));
   $("guardNote").hidden = !state.overheat_guard;
   if (settings && settings.lighting.effect === "temperature") paint(0);
 }
@@ -439,6 +651,7 @@ function renderAll() {
   renderLighting();
   renderFans();
   renderGpu();
+  renderSettings();
   $("keepApplied").checked = settings.keep_applied;
   renderLive();
 }
@@ -468,6 +681,7 @@ $("installService").onclick = async () => {
 
 drawKeyboard();
 buildGauges();
+picker.init();
 refresh(true);
 setInterval(() => refresh(false), 2000);
 requestAnimationFrame(loop);

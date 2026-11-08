@@ -16,6 +16,7 @@
       <button class="tab" data-page="fans">Fans</button>
       <button class="tab" data-page="gpu">GPU</button>
       <button class="tab" data-page="monitor">Monitor</button>
+      <button class="tab" data-page="settings">Settings</button>
       <div class="rail-temps" id="railTemps" aria-live="polite"></div>
     </nav>
 
@@ -36,7 +37,25 @@
 
           <div class="field" id="colourField">
             <h2 id="colourTitle">Zone colour</h2>
-            <div class="swatches" id="swatches"></div>
+            <div class="colour-tools">
+              <div class="picker">
+                <div class="sv" id="sv" tabindex="0" role="slider" aria-label="Colour shade, drag to pick">
+                  <div class="sv-handle" id="svHandle"></div>
+                </div>
+                <div class="hue" id="hue" tabindex="0" role="slider" aria-label="Hue" aria-valuemin="0" aria-valuemax="360">
+                  <div class="hue-handle" id="hueHandle"></div>
+                </div>
+              </div>
+              <div class="colour-side">
+                <div class="swatches" id="swatches"></div>
+                <div class="hex-row">
+                  <span class="chip" id="chip"></span>
+                  <label class="hex-field"><span>Hex</span><input id="hexInput" spellcheck="false" maxlength="7" autocomplete="off"></label>
+                  <button type="button" class="ghost" id="copyHex">Copy</button>
+                </div>
+                <button type="button" class="ghost" id="allZones">Use on all zones</button>
+              </div>
+            </div>
           </div>
 
           <div class="row">
@@ -84,6 +103,18 @@
           <p>Read straight from the laptop's firmware every two seconds.</p>
         </header>
         <div class="gauges" id="gauges"></div>
+      </section>
+      <!-- Settings -->
+      <section class="page" id="page-settings" hidden>
+        <header class="page-head">
+          <h1>Settings</h1>
+          <p>The on/off options PredatorSense had for this laptop. Anything you haven't changed here stays the way the laptop already has it.</p>
+        </header>
+        <div class="toggles" id="toggles"></div>
+        <div class="field unit-field">
+          <h2>Temperature unit</h2>
+          <div class="seg small" id="unit" role="radiogroup" aria-label="Temperature unit"></div>
+        </div>
       </section>
     </main>
   </div>
