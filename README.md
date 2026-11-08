@@ -4,7 +4,7 @@
 
 <h1 align="center">OpenSenses</h1>
 
-<p align="center"><b>OpenSenses</b> is a free, open source alternative to <b>Acer PredatorSense</b> for <b>Predator</b> laptops. Keyboard lighting, fan control, GPU overclock levels and temperatures, on <b>Windows</b> and <b>Linux</b>.</p>
+<p align="center"><b>OpenSenses</b> is a free, open source alternative to <b>Acer PredatorSense</b> for <b>Predator</b> laptops. Keyboard lighting, fan control, GPU overclock levels, the Turbo key, programmable keys and temperatures, on <b>Windows</b> and <b>Linux</b>.</p>
 
 &nbsp;
 
@@ -24,13 +24,16 @@ So I built my own. I also wanted it to run on **Linux**, to make it easier for p
 # **Overview**
 
 🌈 **Keyboard lighting**  
-All four keyboard zones in any colour, plus Breathing, Neon, Wave, Shifting and Zoom with speed, brightness and direction. A Temperature mode turns the keyboard from blue to red as the CPU heats up.
+All four keyboard zones in any colour, plus Breathing, Neon, Wave, Shifting and Zoom with speed, brightness and direction. A Temperature mode turns the keyboard from blue to red as the CPU heats up. On the Helios 700 and Triton 900, every key gets its own colour, with 13 built-in effects and the heat pipe, fan and touchpad lights.
 
 🌀 **Fan control**  
 Auto, Max or a fixed speed for each fan, plus **CoolBoost** for extra cooling in Auto mode. If the laptop gets too hot in Custom mode, the fans go to Max until it cools down.
 
-🚀 **GPU overclock**  
-PredatorSense's Normal, Faster and Turbo levels, with the same clock offsets it used for your GPU.
+🚀 **GPU overclock and Turbo**  
+PredatorSense's Normal, Faster and Turbo levels, with the same clock offsets it used for your GPU. The fans' built-in curve follows the level, as in PredatorSense. The **Turbo key** works again: on the charger it switches to the highest level with the fans on Max, and you can choose what it does.
+
+⌨️ **Programmable keys**  
+On laptops with programmable keys (Helios 500, Helios 700, Triton 900), each key can switch GPU/CPU levels or fan modes, toggle Turbo, the Windows key or Sticky Keys, open a program or type a recorded macro, in three groups. The PredatorSense key opens OpenSenses.
 
 🎮 **GameSync**  
 Give a game its own lighting, fan mode, GPU level and Windows key setting. They switch in when the game starts and back when it closes.
@@ -80,6 +83,8 @@ The same features on both. Linux uses a small kernel driver that comes with Open
 
 The `.deb` and `.rpm` set up everything, including the driver (built with DKMS, so it's rebuilt after kernel updates). With the AppImage, open the app and click **Set up service**. The driver needs your kernel's headers (`linux-headers-…` or `kernel-devel`), and with Secure Boot on you'll be asked once to enroll a signing key.
 
+The Turbo key and the programmable keys need Linux 6.12 or newer.
+
 On image-based systems like **Bazzite**, **Fedora Silverblue** or **SteamOS**, drivers can't be added on the system itself, so only temperatures work there until the driver is included in the system.
 
 &nbsp;
@@ -115,16 +120,16 @@ OpenSenses reads your laptop model and shows only what it can do, using the per-
 
 | Model | Lighting | Fans | GPU levels | Settings |
 | ----- | -------- | ---- | ---------- | -------- |
-| Helios 300 (PH315-52, **PH317-53**) | 4 zones | CPU, GPU | 3 | Idle backlight, LCD overdrive, Windows key, boot animation, CoolBoost |
+| Helios 300 (PH315-52, **PH317-53**) | 4 zones | CPU, GPU | 3 | Idle backlight, LCD overdrive, Windows key, boot animation, CoolBoost, Turbo key |
 | Triton 300 (PT315-51) | 4 zones | CPU, GPU | 3 | Same as Helios 300 |
 | Triton 500 (PT515-51) | 4 zones | CPU, 2 × GPU | 3 | Same, plus NVIDIA-only mode |
-| Helios 500 (PH517-51, PH517-61) | 4 zones | CPU, GPU | 3 (Intel model) | Windows key, CoolBoost |
-| Helios 700 (PH717-71) | Per-key (planned) | CPU, GPU | 4 | Boot animation, CoolBoost |
-| Triton 900 (PT917-71) | Per-key (planned) | CPU, GPU | 3 | Boot animation, CoolBoost |
+| Helios 500 (PH517-51, PH517-61) | 4 zones | CPU, GPU | 3 (Intel model) | Windows key, CoolBoost, 5 programmable keys |
+| Helios 700 (PH717-71) | Per-key, heat pipe, touchpad | CPU, GPU | 4, plus CPU levels on the i9 | Idle backlight, Windows key, boot animation, CoolBoost, 3 programmable keys |
+| Triton 900 (PT917-71) | Per-key, fan, touchpad | CPU, GPU | 3, plus CPU levels on the i9 | Idle backlight, Windows key, boot animation, CoolBoost, 3 programmable keys |
 
 Only the **PH317-53 on Windows** has been tested on real hardware. Everything else follows PredatorSense's own data and is marked **(experimental)** in the app. Other Predator and Nitro laptops with the same firmware may work too: OpenSenses checks what the laptop responds to and only shows those features.
 
-**Planned:** per-key RGB keyboards, CPU overclocking and power limits, and programmable hotkeys on the models that have them.
+**Left out on purpose:** PredatorSense's CPU overclocking and power limits through Intel XTU profiles. They write raw voltage, multiplier and power values straight to the processor, and getting that wrong can make a laptop unstable, so OpenSenses only uses the firmware's own CPU level.
 
 &nbsp;
 
@@ -132,9 +137,12 @@ Only the **PH317-53 on Windows** has been tested on real hardware. Everything el
 
 * **4-Zone RGB** – Any colour per zone, each zone on or off, with a drag colour picker, swatches and hex copy/paste.
 * **6 Lighting Effects** – Static, Breathing, Neon, Wave, Shifting and Zoom, plus a software Temperature effect.
+* **Per-Key RGB** – Helios 700 and Triton 900: a colour for every key, 13 effects, and the heat pipe, fan window and touchpad lights.
 * **Fan Modes** – Auto, Max and Custom with a speed for each fan, and an overheat guard in Custom mode.
 * **CoolBoost** – Faster fans in Auto mode, as in PredatorSense.
-* **GPU Levels** – Normal, Faster and Turbo with PredatorSense's offsets for your GPU, set again after restarts and driver updates.
+* **GPU Levels** – Normal, Faster and Turbo with PredatorSense's offsets for your GPU, set again after restarts and driver updates. The fan curve and (where the BIOS takes it) the CPU level follow, only on the charger, as in PredatorSense.
+* **Turbo Key** – Highest GPU level and fans on Max, or only one of them, or nothing; also a button in the app.
+* **Programmable Keys** – Three groups of actions, including opening programs and macros of up to 50 steps. Actions run as you, never as administrator.
 * **Monitor** – CPU, GPU and system temperatures and both fan speeds, in °C or °F.
 * **On/Off Settings** – Idle keyboard backlight, LCD overdrive, Windows and Menu keys, boot animation and sound, NVIDIA-only mode (Triton 500) and Sticky Keys.
 * **GameSync** – Per-game lighting, fans, GPU level and Windows key, with the game's own icon.
