@@ -6,6 +6,11 @@
 use crate::settings::{Fan, GpuMode, Rgb, Toggle};
 use serde::{Deserialize, Serialize};
 
+/// The laptop OpenSenses has been tested on, and its GPU. Everything on
+/// other models follows PredatorSense's data but is marked experimental.
+pub const TESTED_PRODUCT: &str = "Predator PH317-53";
+pub const TESTED_GPU: (u16, u32) = (0x1F10, 0x1342_1025);
+
 /// PredatorSense's internal name for each family of models; the families
 /// share screens and firmware conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
