@@ -18,6 +18,9 @@ Not affiliated with Acer.
 - **GPU:** PredatorSense's Normal, Faster and Turbo overclock levels.
 - **Monitor:** CPU, GPU and system temperatures and both fan speeds, in °C
   or °F.
+- **Games (GameSync):** give a game its own lighting, fan mode, GPU level and
+  Windows-key setting. They switch in when the game starts and back when it
+  closes, whether or not the app is open.
 - **Settings:** keyboard lighting off after 30 seconds idle, LCD overdrive,
   Windows and Menu keys on or off, boot animation and sound, and Sticky Keys.
 - **Keeps your settings:** a background service applies them at startup and
