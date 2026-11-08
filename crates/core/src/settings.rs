@@ -41,7 +41,19 @@ pub enum FanMode {
 pub enum GpuMode {
     Normal,
     Faster,
+    /// Only the Helios 700 has this fourth level.
+    Boosted,
     Turbo,
+}
+
+/// The fans a model can have, in PredatorSense's terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Fan {
+    Cpu,
+    Gpu,
+    /// Second GPU fan (Triton 500).
+    Gpu2,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,15 +96,35 @@ pub struct Fans {
     /// Custom mode: Some(percent) = fixed speed, None = that fan stays on Auto.
     pub cpu_percent: Option<u8>,
     pub gpu_percent: Option<u8>,
+    pub gpu2_percent: Option<u8>,
 }
 
 impl Default for Fans {
     fn default() -> Self {
-        Self { mode: FanMode::Auto, cpu_percent: Some(50), gpu_percent: Some(50) }
+        Self { mode: FanMode::Auto, cpu_percent: Some(50), gpu_percent: Some(50), gpu2_percent: Some(50) }
     }
 }
 
-/// On/off settings PredatorSense showed for the PH317-53.
+impl Fans {
+    pub fn percent(&self, fan: Fan) -> Option<u8> {
+        match fan {
+            Fan::Cpu => self.cpu_percent,
+            Fan::Gpu => self.gpu_percent,
+            Fan::Gpu2 => self.gpu2_percent,
+        }
+    }
+
+    /// Mode the firmware should report for one fan with these settings.
+    pub fn expected(&self, fan: Fan) -> FanMode {
+        match self.mode {
+            FanMode::Custom if self.percent(fan).is_none() => FanMode::Auto,
+            m => m,
+        }
+    }
+}
+
+/// On/off settings PredatorSense showed; which ones a laptop has depends on
+/// the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Toggle {
@@ -104,10 +136,13 @@ pub enum Toggle {
     BacklightTimeout,
     /// Windows and Menu keys work (off blocks them, e.g. while gaming).
     WinKey,
+    /// Discrete GPU only (on) or hybrid graphics (off); needs a restart.
+    DiscreteGpu,
 }
 
 impl Toggle {
-    pub const ALL: [Toggle; 4] = [Toggle::LcdOverdrive, Toggle::BootAnimation, Toggle::BacklightTimeout, Toggle::WinKey];
+    pub const ALL: [Toggle; 5] =
+        [Toggle::LcdOverdrive, Toggle::BootAnimation, Toggle::BacklightTimeout, Toggle::WinKey, Toggle::DiscreteGpu];
 }
 
 /// `None` means "leave it as the laptop has it": nothing is changed until
@@ -119,6 +154,7 @@ pub struct Toggles {
     pub boot_animation: Option<bool>,
     pub backlight_timeout: Option<bool>,
     pub win_key: Option<bool>,
+    pub discrete_gpu: Option<bool>,
 }
 
 impl Toggles {
@@ -128,6 +164,17 @@ impl Toggles {
             Toggle::BootAnimation => self.boot_animation,
             Toggle::BacklightTimeout => self.backlight_timeout,
             Toggle::WinKey => self.win_key,
+            Toggle::DiscreteGpu => self.discrete_gpu,
+        }
+    }
+
+    pub fn set(&mut self, t: Toggle, v: Option<bool>) {
+        match t {
+            Toggle::LcdOverdrive => self.lcd_overdrive = v,
+            Toggle::BootAnimation => self.boot_animation = v,
+            Toggle::BacklightTimeout => self.backlight_timeout = v,
+            Toggle::WinKey => self.win_key = v,
+            Toggle::DiscreteGpu => self.discrete_gpu = v,
         }
     }
 }
@@ -168,6 +215,7 @@ impl Settings {
         l.brightness = l.brightness.min(100);
         self.fans.cpu_percent = self.fans.cpu_percent.map(|p| p.min(100));
         self.fans.gpu_percent = self.fans.gpu_percent.map(|p| p.min(100));
+        self.fans.gpu2_percent = self.fans.gpu2_percent.map(|p| p.min(100));
         self
     }
 }
