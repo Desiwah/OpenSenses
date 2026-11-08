@@ -1,6 +1,8 @@
 // No console window behind the app on Windows release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod icon;
+
 use pcore::ipc::{request, Request, Response, State};
 use pcore::settings::Settings;
 
@@ -37,8 +39,14 @@ async fn reapply() -> Result<State, String> {
 
 /// Programs running in this Windows session, for picking a game to add.
 #[tauri::command]
-async fn running_apps() -> Vec<String> {
+async fn running_apps() -> Vec<pcore::procs::App> {
     tauri::async_runtime::spawn_blocking(pcore::procs::user_apps).await.unwrap_or_default()
+}
+
+/// A program's icon as a data URL, for the game list.
+#[tauri::command]
+async fn app_icon(path: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || icon::data_url(&path)).await.ok().flatten()
 }
 
 /// Registers the background service when it is missing (asks for admin).
@@ -119,7 +127,7 @@ fn set_sticky_keys(on: bool) -> Result<(), String> {
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, running_apps, install_service, get_sticky_keys, set_sticky_keys])
+        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, running_apps, app_icon, install_service, get_sticky_keys, set_sticky_keys])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }
