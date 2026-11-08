@@ -15,9 +15,64 @@ pub fn data_url(path: &str) -> Option<String> {
     Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png)))
 }
 
+/// Linux: Windows games (run through Wine or Proton) carry their icon in
+/// the .exe, read here without Windows; native apps get the icon of their
+/// desktop entry from the icon theme.
 #[cfg(not(windows))]
-pub fn data_url(_path: &str) -> Option<String> {
-    None
+pub fn data_url(path: &str) -> Option<String> {
+    use base64::Engine;
+    let b64 = |mime: &str, bytes: &[u8]| format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes));
+    if path.to_lowercase().ends_with(".exe") {
+        if let Some(png) = exe_icon_png(std::path::Path::new(path)) {
+            return Some(b64("image/png", &png));
+        }
+    }
+    static APPS: std::sync::OnceLock<std::collections::HashMap<String, String>> = std::sync::OnceLock::new();
+    let apps = APPS.get_or_init(pcore::desktop::apps);
+    let icon = apps.get(&pcore::settings::exe_name(path))?;
+    let file = pcore::desktop::icon_file(icon)?;
+    let bytes = std::fs::read(&file).ok()?;
+    let mime = if file.extension().and_then(|e| e.to_str()) == Some("svg") { "image/svg+xml" } else { "image/png" };
+    Some(b64(mime, &bytes))
+}
+
+/// The program's main icon from its PE resources, as PNG, picking the size
+/// closest to 48 pixels.
+#[cfg(not(windows))]
+fn exe_icon_png(path: &std::path::Path) -> Option<Vec<u8>> {
+    let map = pelite::FileMap::open(path).ok()?;
+    let pe = pelite::PeFile::from_bytes(&map).ok()?;
+    let res = pe.resources().ok()?;
+    let (_, group) = res.icons().find_map(|r| r.ok())?;
+    let mut ico = Vec::new();
+    group.write(&mut ico).ok()?;
+    let dir = ico::IconDir::read(std::io::Cursor::new(ico)).ok()?;
+    let entry = dir.entries().iter().min_by_key(|e| {
+        let w = e.width() as i32;
+        // Prefer 48 and up to 64; then larger ones over smaller ones.
+        if (48..=64).contains(&w) { 0 } else if w > 64 { w - 64 } else { 1000 - w }
+    })?;
+    let img = entry.decode().ok()?;
+    let mut png = Vec::new();
+    img.write_png(&mut png).ok()?;
+    Some(png)
+}
+
+#[cfg(all(test, not(windows)))]
+mod tests {
+    /// Uses the Windows build of this app, which carries the app icon.
+    #[test]
+    fn reads_an_exe_icon() {
+        let exe = concat!(env!("CARGO_MANIFEST_DIR"), "/../target/x86_64-pc-windows-gnu/release/opensenses.exe");
+        if !std::path::Path::new(exe).exists() {
+            return;
+        }
+        let png = super::exe_icon_png(std::path::Path::new(exe)).expect("icon");
+        assert_eq!(&png[1..4], b"PNG");
+        if let Ok(out) = std::env::var("ICON_OUT") {
+            std::fs::write(out, &png).unwrap();
+        }
+    }
 }
 
 /// Width, height and RGBA pixels of the program's first icon.

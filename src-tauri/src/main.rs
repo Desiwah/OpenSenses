@@ -118,7 +118,7 @@ fn get_sticky_keys() -> Option<bool> {
         Some(sk.dwFlags.0 & SKF_STICKYKEYSON.0 != 0)
     }
     #[cfg(not(windows))]
-    None
+    linux_a11y::get()
 }
 
 #[tauri::command]
@@ -142,9 +142,61 @@ fn set_sticky_keys(on: bool) -> Result<(), String> {
             .map_err(|e| e.to_string())
     }
     #[cfg(not(windows))]
-    {
-        let _ = on;
-        Err("Sticky Keys is a Windows setting".into())
+    linux_a11y::set(on)
+}
+
+/// Sticky Keys on Linux is a desktop setting: KDE Plasma keeps it in
+/// kaccessrc, GNOME in its accessibility settings.
+#[cfg(not(windows))]
+mod linux_a11y {
+    use std::process::Command;
+
+    enum Desktop {
+        Kde,
+        Gnome,
+    }
+
+    fn desktop() -> Option<Desktop> {
+        let d = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_uppercase();
+        if d.contains("KDE") {
+            Some(Desktop::Kde)
+        } else if d.contains("GNOME") || d.contains("UNITY") || d.contains("CINNAMON") || d.contains("BUDGIE") {
+            Some(Desktop::Gnome)
+        } else {
+            None
+        }
+    }
+
+    fn output(cmd: &str, args: &[&str]) -> Option<String> {
+        let o = Command::new(cmd).args(args).output().ok()?;
+        o.status.success().then(|| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    }
+
+    pub fn get() -> Option<bool> {
+        match desktop()? {
+            Desktop::Kde => {
+                let args = ["--file", "kaccessrc", "--group", "Keyboard", "--key", "StickyKeys", "--default", "false"];
+                output("kreadconfig6", &args).or_else(|| output("kreadconfig5", &args)).map(|v| v == "true")
+            }
+            Desktop::Gnome => output("gsettings", &["get", "org.gnome.desktop.a11y.keyboard", "stickykeys-enable"]).map(|v| v == "true"),
+        }
+    }
+
+    pub fn set(on: bool) -> Result<(), String> {
+        let v = if on { "true" } else { "false" };
+        let ok = match desktop().ok_or("Sticky Keys can be changed on KDE Plasma and GNOME desktops")? {
+            Desktop::Kde => {
+                // --notify makes Plasma pick the change up right away.
+                let args = ["--file", "kaccessrc", "--group", "Keyboard", "--key", "StickyKeys", "--notify", v];
+                output("kwriteconfig6", &args).or_else(|| output("kwriteconfig5", &args)).is_some()
+            }
+            Desktop::Gnome => output("gsettings", &["set", "org.gnome.desktop.a11y.keyboard", "stickykeys-enable", v]).is_some(),
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err("couldn't change the desktop's Sticky Keys setting".into())
+        }
     }
 }
 

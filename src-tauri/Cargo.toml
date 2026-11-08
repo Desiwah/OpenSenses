@@ -19,3 +19,8 @@ anyhow.workspace = true
 windows = { version = "0.58", features = ["Win32_Graphics_Gdi", "Win32_UI_Accessibility", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 png = "0.18"
 base64 = "0.22"
+
+[target.'cfg(not(windows))'.dependencies]
+pelite = "0.10"
+ico = "0.4"
+base64 = "0.22"
