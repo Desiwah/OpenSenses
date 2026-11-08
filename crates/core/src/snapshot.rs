@@ -42,6 +42,11 @@ pub struct Snapshot {
     pub gpu_core: Option<i32>,
     pub gpu_memory: Option<i32>,
     pub turbo_led: Option<bool>,
+    /// The firmware fan curve (`GetGamingFanTable`), 1 = normal.
+    pub fan_curve: Option<u8>,
+    /// Whether the CPU level was set back to normal on restore. It can't be
+    /// read back, so it's always normal (what the laptop boots with).
+    pub cpu_level: Option<u8>,
     pub toggles: Toggles,
 }
 
@@ -54,7 +59,10 @@ pub struct Info {
 
 impl Snapshot {
     pub fn info(&self) -> Info {
-        Info { taken: self.taken, source: self.source.clone() }
+        Info {
+            taken: self.taken,
+            source: self.source.clone(),
+        }
     }
 
     /// Acer's defaults for a known model: static lighting in the model's
@@ -88,13 +96,18 @@ impl Snapshot {
             gpu_core: (!model.gpu_tables.is_empty()).then_some(0),
             gpu_memory: (!model.gpu_tables.is_empty()).then_some(0),
             turbo_led: Some(false),
+            fan_curve: (!model.gpu_levels.is_empty()).then_some(1),
+            cpu_level: model.cpu_to_firmware.then_some(0),
             toggles: t,
         }
     }
 }
 
 pub fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 pub fn path() -> PathBuf {
@@ -133,7 +146,10 @@ mod tests {
         assert_eq!(s.zones.unwrap()[0], Rgb { r: 0x00, g: 0xAE, b: 0xC7 });
         assert_eq!(s.fans, vec![(Fan::Cpu, FanMode::Auto), (Fan::Gpu, FanMode::Auto)]);
         assert_eq!((s.gpu_core, s.gpu_memory, s.gpu_level), (Some(0), Some(0), Some(0)));
-        assert_eq!((s.toggles.cool_boost, s.toggles.win_key, s.toggles.lcd_overdrive), (Some(false), Some(true), None));
+        assert_eq!(
+            (s.toggles.cool_boost, s.toggles.win_key, s.toggles.lcd_overdrive),
+            (Some(false), Some(true), None)
+        );
         let json = serde_json::to_string(&s).unwrap();
         let back: Snapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(back.kb_effect, s.kb_effect);

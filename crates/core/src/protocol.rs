@@ -99,12 +99,13 @@ pub fn decode_rgb_zone(out: u64) -> Option<Rgb> {
 /// Firmware effect id used in byte 0 of `SetGamingKBBacklight`.
 pub fn effect_id(e: Effect) -> u8 {
     match e {
-        Effect::Static | Effect::Temperature => 0,
         Effect::Breathing => 1,
         Effect::Neon => 2,
         Effect::Wave => 3,
         Effect::Shifting => 4,
         Effect::Zoom => 5,
+        // Static, Temperature and the per-key keyboards' own effects.
+        _ => 0,
     }
 }
 
@@ -122,7 +123,7 @@ pub fn kb_backlight(effect: Effect, speed: u8, brightness: u8, direction: Direct
     let mut p = [0u8; 16];
     p[0] = effect_id(effect);
     p[2] = brightness.min(100);
-    if matches!(effect, Effect::Static | Effect::Temperature) {
+    if p[0] == 0 {
         return p;
     }
     p[1] = speed.clamp(1, 9);
@@ -131,8 +132,8 @@ pub fn kb_backlight(effect: Effect, speed: u8, brightness: u8, direction: Direct
     }
     if effect_uses_direction(effect) {
         p[4] = match direction {
-            Direction::RightToLeft => 1,
-            Direction::LeftToRight => 2,
+            Direction::RightToLeft | Direction::Up => 1,
+            Direction::LeftToRight | Direction::Down => 2,
         };
     }
     if effect_uses_colour(effect) {
@@ -364,6 +365,31 @@ pub fn decode_cool_boost(out: u64) -> Option<bool> {
     Some((out >> 8) & 0xFF == 1)
 }
 
+/// CPU overclock / power level for the firmware,
+/// `SetGamingMiscSetting(0x07 | level << 8)` (0 Normal .. 3 Extreme). This
+/// is what PredatorSense sends on models with `CPUOCWMIRule=1`; the firmware
+/// doesn't report it back (`GetGamingMiscSetting(7)` returns status 2 on a
+/// PH317-53).
+pub const MISC_CPU_OC: u64 = 0x07;
+
+pub fn cpu_oc(level_index: usize) -> u64 {
+    MISC_CPU_OC | ((level_index as u64) & 0xFF) << 8
+}
+
+/// Firmware fan curve. PredatorSense picks curve `max(cpu, gpu level) + 1`
+/// and only sends `SetGamingFanTable(curve)` when `GetGamingFanTable(0)`
+/// reports a different one (byte 1), as read from PSSvc.exe.
+pub fn fan_table_for(cpu_index: usize, gpu_index: usize) -> u8 {
+    (cpu_index.max(gpu_index) + 1).min(255) as u8
+}
+
+pub fn decode_fan_table(out: u64) -> Option<u8> {
+    if out & 0xFF != 0 {
+        return None;
+    }
+    Some(((out >> 8) & 0xFF) as u8)
+}
+
 /// `SetGamingLED` values for the turbo LED.
 pub const TURBO_LED_ON: u64 = 0x10001;
 pub const TURBO_LED_OFF: u64 = 0x1;
@@ -444,6 +470,10 @@ mod tests {
         assert_eq!(boot_animation(true), 0x106);
         assert_eq!(decode_misc_flag(0x0), Some(false));
         assert_eq!(decode_cool_boost(0x1010000), Some(false));
+        assert_eq!((cpu_oc(0), cpu_oc(2)), (0x007, 0x207));
+        assert_eq!(fan_table_for(0, 2), 3);
+        // read on the PH317-53 with GPU Faster set: curve 1
+        assert_eq!(decode_fan_table(0x100), Some(1));
         let fx = kb_backlight(Effect::Wave, 5, 75, Direction::LeftToRight, Rgb::default());
         let back = decode_kb_backlight(&fx).unwrap();
         assert_eq!((back.0, back.1, back.2, back.3), (Effect::Wave, 5, 75, Direction::LeftToRight));

@@ -47,7 +47,11 @@ pub struct Driver {
 
 impl Driver {
     pub fn open() -> Result<Self> {
-        let file = fs::OpenOptions::new().read(true).write(true).open(DEVICE).with_context(|| format!("{DEVICE} is missing"))?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(DEVICE)
+            .with_context(|| format!("{DEVICE} is missing"))?;
         let mut me = Self { file, apge: true };
         // APGeAction answers on every model PredatorSense knew, but check.
         me.apge = me.raw(Iface::Apge, "GetFunction", Input::U32(p::COOL_BOOST_GET)).is_ok();
@@ -109,8 +113,65 @@ impl Transport for Driver {
     }
 }
 
+/// Reads firmware key events from the OpenSenses driver: each `read` of
+/// /dev/opensenses returns one 8-byte `EventDetail` (kernel 6.12 and later,
+/// where the driver can receive them alongside acer-wmi).
+pub fn listen_events(tx: std::sync::mpsc::Sender<[u8; 8]>) {
+    use std::io::Read;
+    loop {
+        if let Ok(mut f) = fs::File::open(DEVICE) {
+            let mut b = [0u8; 8];
+            loop {
+                match f.read(&mut b) {
+                    Ok(8) => {
+                        if tx.send(b).is_err() {
+                            return;
+                        }
+                    }
+                    // EOF / unsupported (older kernels): stop quietly.
+                    Ok(_) => return,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
+}
+
+/// The processor's name from /proc/cpuinfo.
+pub fn cpu_name() -> String {
+    fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|t| {
+            t.lines()
+                .find(|l| l.starts_with("model name"))
+                .and_then(|l| l.split_once(':'))
+                .map(|(_, v)| v.trim().to_string())
+        })
+        .unwrap_or_default()
+}
+
+/// On AC power, and the battery percentage, from /sys/class/power_supply.
+pub fn power_status() -> Option<(bool, u8)> {
+    let mut ac = None;
+    let mut pct = None;
+    for e in fs::read_dir("/sys/class/power_supply").ok()?.flatten() {
+        let p = e.path();
+        let kind = fs::read_to_string(p.join("type")).unwrap_or_default();
+        match kind.trim() {
+            "Mains" => ac = Some(read_num(&p.join("online")) == Some(1)),
+            "Battery" => pct = read_num(&p.join("capacity")).map(|v| v.min(100) as u8),
+            _ => {}
+        }
+    }
+    Some((ac.unwrap_or(true), pct.unwrap_or(100)))
+}
+
 pub fn dmi(field: &str) -> String {
-    fs::read_to_string(format!("/sys/class/dmi/id/{field}")).map(|s| s.trim().to_string()).unwrap_or_default()
+    fs::read_to_string(format!("/sys/class/dmi/id/{field}"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
 }
 
 /// The firmware backend through the driver, or, when the driver isn't
@@ -119,7 +180,11 @@ pub fn open() -> Result<Box<dyn Backend>> {
     if !Path::new(DEVICE).exists() {
         // Installed but not loaded yet (e.g. right after installing), or
         // built by the service itself without DKMS.
-        let ok = std::process::Command::new("modprobe").arg("opensenses").status().map(|s| s.success()).unwrap_or(false);
+        let ok = std::process::Command::new("modprobe")
+            .arg("opensenses")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
         let release = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
         let ko = local_module(release.trim());
         if !ok && ko.is_file() {
@@ -135,14 +200,16 @@ pub fn open() -> Result<Box<dyn Backend>> {
     let product = dmi("product_name");
     match Driver::open() {
         Ok(d) => {
-            let gpu = super::nvml::Nvml::open().map(|n| Box::new(n) as Box<dyn GpuClocks>).map_err(|e| format!("{e:#}"));
+            let gpu = super::nvml::Nvml::open()
+                .map(|n| Box::new(n) as Box<dyn GpuClocks>)
+                .map_err(|e| format!("{e:#}"));
             if let Err(e) = &gpu {
                 log::info!("GPU clock offsets unavailable: {e}");
             }
             let family = Some(dmi("product_family"));
             // Linux hasn't been tried on real hardware yet: everything is
             // marked experimental until it has.
-            Ok(Box::new(AcerBackend::new(d, gpu, product, family, false)))
+            Ok(Box::new(AcerBackend::new(d, gpu, product, family, &cpu_name(), false)))
         }
         Err(e) => {
             log::warn!("OpenSenses driver unavailable ({e:#}); only sensors will work");
@@ -178,7 +245,11 @@ fn read_num(p: &Path) -> Option<u32> {
 
 impl SensorsOnly {
     fn new(product: String) -> Self {
-        Self { hwmon_acer: hwmon_named(&["acer"]), hwmon_cpu: hwmon_named(&["coretemp", "k10temp"]), product }
+        Self {
+            hwmon_acer: hwmon_named(&["acer"]),
+            hwmon_cpu: hwmon_named(&["coretemp", "k10temp"]),
+            product,
+        }
     }
 
     fn acer(&self, file: &str) -> Option<u32> {
@@ -195,7 +266,9 @@ impl Backend for SensorsOnly {
         let model = crate::models::lookup(&self.product);
         Capabilities {
             product: self.product.clone(),
-            model_name: model.map(|m| m.name.to_string()).or_else(|| Some(dmi("product_family")).filter(|s| !s.is_empty())),
+            model_name: model
+                .map(|m| m.name.to_string())
+                .or_else(|| Some(dmi("product_family")).filter(|s| !s.is_empty())),
             known_model: model.is_some(),
             sensors: self.hwmon_acer.is_some() || self.hwmon_cpu.is_some(),
             sticky_keys: true,
@@ -213,8 +286,7 @@ impl Backend for SensorsOnly {
     fn sensors(&mut self) -> Sensors {
         // acer hwmon channel order: temp1 CPU, temp2 system, temp3 GPU; fan1 CPU, fan2 GPU
         let milli = |v: Option<u32>| v.map(|t| t / 1000);
-        let cpu = milli(self.acer("temp1_input"))
-            .or_else(|| milli(self.hwmon_cpu.as_ref().and_then(|d| read_num(&d.join("temp1_input")))));
+        let cpu = milli(self.acer("temp1_input")).or_else(|| milli(self.hwmon_cpu.as_ref().and_then(|d| read_num(&d.join("temp1_input")))));
         Sensors {
             cpu_temp: cpu,
             sys_temp: milli(self.acer("temp2_input")),

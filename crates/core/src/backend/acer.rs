@@ -38,16 +38,53 @@ pub struct AcerBackend<T: Transport> {
     gpu: std::result::Result<Box<dyn GpuClocks>, String>,
     model: Option<&'static Model>,
     caps: Capabilities,
+    /// The per-key keyboard's controller, opened when first needed.
+    kb: Option<crate::perkey::Keyboard>,
 }
 
 impl<T: Transport> AcerBackend<T> {
     /// `product` is the BIOS product name, `family` the BIOS family name
     /// (shown for unknown models). `tested` says whether this OS has been
     /// tried on the tested laptop; when not, everything is experimental.
-    pub fn new(t: T, gpu: std::result::Result<Box<dyn GpuClocks>, String>, product: String, family: Option<String>, tested: bool) -> Self {
+    /// `cpu` is the processor name ("Intel(R) Core(TM) i9-8950HK CPU ...").
+    pub fn new(t: T, gpu: std::result::Result<Box<dyn GpuClocks>, String>, product: String, family: Option<String>, cpu: &str, tested: bool) -> Self {
         let model = models::lookup(&product);
-        let mut me = Self { t, gpu, model, caps: Capabilities::default() };
-        let caps = me.detect(product, family);
+        let mut me = Self {
+            t,
+            gpu,
+            model,
+            caps: Capabilities::default(),
+            kb: None,
+        };
+        let mut caps = me.detect(product, family);
+        if let Some(m) = model {
+            // PredatorSense offered CPU overclocking only on the unlocked HK
+            // processors; on the others the CPU power level follows the GPU.
+            let unlocked = cpu.to_ascii_uppercase().split_whitespace().any(|w| w.ends_with("HK"));
+            if m.cpu_to_firmware && unlocked && !m.cpu_oc_levels.is_empty() {
+                caps.cpu_levels = m.cpu_oc_levels.to_vec();
+            }
+            caps.cpu_follows_gpu = m.cpu_to_firmware && caps.cpu_levels.is_empty() && !caps.gpu_levels.is_empty();
+            caps.fan_table = !caps.gpu_levels.is_empty() || !caps.cpu_levels.is_empty();
+            caps.turbo_key = m.machine_type != 0 && !caps.gpu_levels.is_empty();
+            caps.hotkey_keys = m.hotkey_keys;
+            // The Helios 300 / Triton 300 family has no PredatorSense key.
+            caps.ps_key = m.machine_type != 1;
+            if m.per_key {
+                // Helios 700 (MachineType 4) / Triton 900 (3).
+                caps.heat_pipe_light = m.machine_type == 4;
+                caps.fan_light = m.machine_type == 3;
+                caps.touchpad_light = if m.machine_type == 3 { 2 } else { 1 };
+                match me.keyboard() {
+                    Some(kb) => caps.per_key_layout = kb.layout(),
+                    None => {
+                        log::warn!("per-key keyboard controller not found");
+                        caps.notice
+                            .get_or_insert_with(|| "The per-key keyboard's controller wasn't found, so keyboard lighting can't be changed.".into());
+                    }
+                }
+            }
+        }
         me.caps = if tested { caps } else { caps.all_experimental().with_experimental("games") };
         log::info!("hardware: {:?}", me.caps);
         me
@@ -111,12 +148,13 @@ impl<T: Transport> AcerBackend<T> {
                     .iter()
                     .copied()
                     .chain((!m.fans.is_empty()).then_some(Toggle::CoolBoost))
-                    .filter(|t| !matches!(t, Toggle::BacklightTimeout | Toggle::CoolBoost) || apge)
+                    .filter(|t| !matches!(t, Toggle::BacklightTimeout | Toggle::CoolBoost) || apge || (m.per_key && *t == Toggle::BacklightTimeout))
                     .collect(),
                 sticky_keys: true,
                 coming: super::coming_features(m),
                 experimental: Vec::new(),
                 notice: None,
+                ..Default::default()
             };
             if m.product != models::TESTED_PRODUCT {
                 return caps.all_experimental();
@@ -145,10 +183,20 @@ impl<T: Transport> AcerBackend<T> {
         if self.call("GetGamingProfile", Input::U32(0)).ok().and_then(p::decode_profile).is_some() {
             toggles.extend([Toggle::LcdOverdrive, Toggle::WinKey]);
         }
-        if self.call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_MODE as u32)).ok().and_then(p::decode_discrete_gpu).is_some() {
+        if self
+            .call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_MODE as u32))
+            .ok()
+            .and_then(p::decode_discrete_gpu)
+            .is_some()
+        {
             toggles.push(Toggle::DiscreteGpu);
         }
-        if self.call("GetGamingMiscSetting", Input::U32(p::MISC_BOOT_ANIMATION as u32)).ok().and_then(p::decode_misc_flag).is_some() {
+        if self
+            .call("GetGamingMiscSetting", Input::U32(p::MISC_BOOT_ANIMATION as u32))
+            .ok()
+            .and_then(p::decode_misc_flag)
+            .is_some()
+        {
             toggles.push(Toggle::BootAnimation);
         }
         let sensors = self.sensor(p::SENSOR_CPU_TEMP).is_some();
@@ -168,12 +216,42 @@ impl<T: Transport> AcerBackend<T> {
             coming: Vec::new(),
             experimental: Vec::new(),
             notice: None,
+            ..Default::default()
         }
         .all_experimental()
     }
 
+    fn keyboard(&mut self) -> Option<&mut crate::perkey::Keyboard> {
+        if self.kb.is_none() && self.model.map(|m| m.per_key).unwrap_or(false) {
+            match crate::perkey::Keyboard::open() {
+                Ok(k) => self.kb = Some(k),
+                Err(e) => log::debug!("per-key keyboard: {e:#}"),
+            }
+        }
+        self.kb.as_mut()
+    }
+
+    /// Runs `f` on the keyboard controller, opening it again once if the
+    /// first try fails (it may have been re-enumerated after sleep).
+    fn with_keyboard<R>(&mut self, f: impl Fn(&mut crate::perkey::Keyboard) -> Result<R>) -> Result<R> {
+        if let Some(kb) = self.keyboard() {
+            if let Ok(r) = f(kb) {
+                return Ok(r);
+            }
+        }
+        self.kb = None;
+        let kb = self.keyboard().ok_or_else(|| anyhow!("per-key keyboard controller not found"))?;
+        f(kb)
+    }
+
+    fn per_key(&self) -> bool {
+        self.model.map(|m| m.per_key).unwrap_or(false)
+    }
+
     fn read_backlight(&self) -> Option<bool> {
-        self.apge("GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET)).ok().and_then(p::decode_backlight_timeout)
+        self.apge("GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET))
+            .ok()
+            .and_then(p::decode_backlight_timeout)
     }
 
     fn read_cool_boost(&self) -> Option<bool> {
@@ -186,10 +264,15 @@ impl<T: Transport> AcerBackend<T> {
 
     fn read_toggles(&self) -> Toggles {
         let profile = self.call("GetGamingProfile", Input::U32(0)).ok().and_then(p::decode_profile);
-        let boot = self.call("GetGamingMiscSetting", Input::U32(p::MISC_BOOT_ANIMATION as u32)).ok().and_then(p::decode_misc_flag);
+        let boot = self
+            .call("GetGamingMiscSetting", Input::U32(p::MISC_BOOT_ANIMATION as u32))
+            .ok()
+            .and_then(p::decode_misc_flag);
         let has = |t| self.caps.has_toggle(t);
         let discrete = if has(Toggle::DiscreteGpu) {
-            self.call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_MODE as u32)).ok().and_then(p::decode_discrete_gpu)
+            self.call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_MODE as u32))
+                .ok()
+                .and_then(p::decode_discrete_gpu)
         } else {
             None
         };
@@ -197,7 +280,12 @@ impl<T: Transport> AcerBackend<T> {
             lcd_overdrive: profile.map(|(lcd, _)| lcd).filter(|_| has(Toggle::LcdOverdrive)),
             win_key: profile.map(|(_, win)| win).filter(|_| has(Toggle::WinKey)),
             boot_animation: boot.filter(|_| has(Toggle::BootAnimation)),
-            backlight_timeout: if has(Toggle::BacklightTimeout) { self.read_backlight() } else { None },
+            // On per-key models the timeout lives in the keyboard controller.
+            backlight_timeout: if has(Toggle::BacklightTimeout) && !self.per_key() {
+                self.read_backlight()
+            } else {
+                None
+            },
             discrete_gpu: discrete,
             cool_boost: if has(Toggle::CoolBoost) { self.read_cool_boost() } else { None },
         }
@@ -258,12 +346,92 @@ impl<T: Transport> Backend for AcerBackend<T> {
         }
     }
 
+    fn set_cpu_level(&mut self, index: usize) -> Result<()> {
+        if !self.model.map(|m| m.cpu_to_firmware).unwrap_or(false) || !(self.caps.cpu_follows_gpu || !self.caps.cpu_levels.is_empty()) {
+            return Ok(());
+        }
+        let out = self.call("SetGamingMiscSetting", Input::U64(p::cpu_oc(index)))?;
+        if out & 0xFF != 0 {
+            // Some BIOS versions don't take the CPU level (the PH317-53
+            // answers 2, "not supported"); then there's nothing to show.
+            log::info!("this BIOS doesn't take a CPU level (status 0x{:X}); leaving the CPU alone", out & 0xFF);
+            self.caps.cpu_follows_gpu = false;
+            self.caps.cpu_levels.clear();
+        }
+        Ok(())
+    }
+
+    fn set_fan_table(&mut self, curve: u8) -> Result<()> {
+        // Read first, as PredatorSense does: sleep or the firmware may have
+        // changed it.
+        if self.call("GetGamingFanTable", Input::U32(0)).ok().and_then(p::decode_fan_table) == Some(curve) {
+            return Ok(());
+        }
+        self.set("SetGamingFanTable", Input::U64(curve as u64))
+    }
+
+    fn hotkey_group(&mut self) -> Option<u8> {
+        let v = self.call("GetGamingProfile", Input::U32(0)).ok().filter(|v| v & 0xFF == 0)?;
+        Some(((v >> 32) & 0xFF) as u8).filter(|g| (1..=3).contains(g))
+    }
+
     fn set_turbo_led(&mut self, on: bool) -> Result<()> {
         let v = if on { p::TURBO_LED_ON } else { p::TURBO_LED_OFF };
         self.set("SetGamingLED", Input::U64(v))
     }
 
+    fn set_per_key(&mut self, l: &crate::settings::Lighting, old: Option<&crate::settings::Lighting>) -> Result<()> {
+        if !self.per_key() {
+            return Ok(());
+        }
+        let product = self.caps.product.clone();
+        self.with_keyboard(|kb| kb.apply(&product, l, old))
+    }
+
+    fn set_extra_lights(&mut self, e: &crate::settings::ExtraLights, touchpad: Option<Rgb>) -> Vec<String> {
+        let mut errors = Vec::new();
+        let colour = |group: u64, c: Rgb| group | (c.r as u64) << 8 | (c.g as u64) << 16 | (c.b as u64) << 24;
+        let mut send = |me: &Self, what: &str, method: &str, v: u64| {
+            if let Err(e) = me.set(method, Input::U64(v)) {
+                errors.push(format!("{what}: {e:#}"));
+            }
+        };
+        if self.caps.heat_pipe_light {
+            if let Some(c) = e.heat_pipe_colour {
+                send(self, "heat pipe light", "SetGamingLEDColor", colour(7, c));
+            }
+            if let Some(on) = e.heat_pipe {
+                // Bit 29 keeps the start-up / Turbo-key light show on, as PredatorSense's default.
+                send(self, "heat pipe light", "SetGamingLEDBehavior", 0x40 | (on as u64) << 28 | 1 << 29);
+            }
+        }
+        if self.caps.fan_light {
+            if let Some(c) = e.fan_led_colour {
+                send(self, "fan light", "SetGamingLEDColor", colour(6, c));
+            }
+            if let Some(on) = e.fan_led {
+                send(self, "fan light", "SetGamingLEDBehavior", 0x20 | (on as u64) << 26);
+            }
+        }
+        if self.caps.touchpad_light > 0 {
+            if let (Some(c), 2) = (touchpad, self.caps.touchpad_light) {
+                send(self, "touchpad light", "SetGamingLEDColor", colour(8, c));
+            }
+            if let Some(on) = e.touchpad {
+                send(self, "touchpad light", "SetGamingLEDBehavior", 0x80 | (on as u64) << 30);
+            }
+        }
+        errors
+    }
+
     fn set_toggle(&mut self, t: Toggle, on: bool) -> Result<()> {
+        if self.per_key() {
+            match t {
+                Toggle::WinKey => return self.with_keyboard(|kb| kb.set_win_key(on)),
+                Toggle::BacklightTimeout => return self.with_keyboard(|kb| kb.set_timeout(on)),
+                _ => {}
+            }
+        }
         match t {
             Toggle::LcdOverdrive => self.set("SetGamingProfile", Input::U64(p::lcd_overdrive(on))),
             Toggle::WinKey => self.set("SetGamingProfile", Input::U64(p::win_key(on))),
@@ -325,7 +493,13 @@ impl<T: Transport> Backend for AcerBackend<T> {
         };
         let gpu_core_offset = self.gpu.as_ref().ok().and_then(|g| g.core_offset().ok());
         let toggles = self.read_toggles();
-        Observed { zones: ok.then_some(zones), fans, gpu, gpu_core_offset, toggles }
+        Observed {
+            zones: ok.then_some(zones),
+            fans,
+            gpu,
+            gpu_core_offset,
+            toggles,
+        }
     }
 
     fn snapshot(&mut self) -> Option<Snapshot> {
@@ -341,7 +515,10 @@ impl<T: Transport> Backend for AcerBackend<T> {
             .iter()
             .filter(|(_, m)| *m == FanMode::Custom)
             .filter_map(|&(f, _)| {
-                self.call("GetGamingFanSpeed", Input::U32(p::fan_speed_query(f))).ok().and_then(p::decode_fan_speed).map(|s| (f, s))
+                self.call("GetGamingFanSpeed", Input::U32(p::fan_speed_query(f)))
+                    .ok()
+                    .and_then(p::decode_fan_speed)
+                    .map(|s| (f, s))
             })
             .collect();
         let gpu_level = if self.gpu_to_firmware() {
@@ -357,6 +534,12 @@ impl<T: Transport> Backend for AcerBackend<T> {
             _ => (None, None),
         };
         let turbo_led = self.call("GetGamingLED", Input::U32(1)).ok().filter(|v| v & 0xFF == 0).map(|v| v & 0xFF00 != 0);
+        let fan_curve = if self.caps.fan_table {
+            self.call("GetGamingFanTable", Input::U32(0)).ok().and_then(p::decode_fan_table)
+        } else {
+            None
+        };
+        let cpu_level = self.model.filter(|m| m.cpu_to_firmware).map(|_| 0);
         Some(Snapshot {
             taken: crate::snapshot::now(),
             source: Source::Laptop,
@@ -369,6 +552,8 @@ impl<T: Transport> Backend for AcerBackend<T> {
             gpu_core,
             gpu_memory,
             turbo_led,
+            fan_curve,
+            cpu_level,
             toggles: seen.toggles,
         })
     }
@@ -423,6 +608,12 @@ impl<T: Transport> Backend for AcerBackend<T> {
         if let Some(on) = s.turbo_led {
             let _ = self.set_turbo_led(on);
         }
+        if let Some(level) = s.cpu_level {
+            note("CPU level", self.set_cpu_level(level as usize));
+        }
+        if let (Some(curve), true) = (s.fan_curve, self.caps.fan_table) {
+            note("fan curve", self.set_fan_table(curve));
+        }
         for t in self.caps.toggles.clone() {
             if let Some(on) = s.toggles.get(t) {
                 note("setting", self.set_toggle(t, on));
@@ -438,8 +629,14 @@ impl<T: Transport> Backend for AcerBackend<T> {
         out.push(format!("GetGamingMiscSetting(6) = {}", raw(self.call("GetGamingMiscSetting", Input::U32(6)))));
         out.push(format!("GetGamingLED(1) = {}", raw(self.call("GetGamingLED", Input::U32(1)))));
         if self.t.has_apge() {
-            out.push(format!("APGeAction.GetFunction(0x88401) = {}", raw(self.apge("GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET)))));
-            out.push(format!("APGeAction.GetFunction(0x207) = {}", raw(self.apge("GetFunction", Input::U32(p::COOL_BOOST_GET)))));
+            out.push(format!(
+                "APGeAction.GetFunction(0x88401) = {}",
+                raw(self.apge("GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET)))
+            ));
+            out.push(format!(
+                "APGeAction.GetFunction(0x207) = {}",
+                raw(self.apge("GetFunction", Input::U32(p::COOL_BOOST_GET)))
+            ));
         }
         let kb = self.t.call_bytes(Iface::Gaming, "GetGamingKBBacklight", Input::U32(0));
         out.push(format!("GetGamingKBBacklight(0) = {kb:02X?}"));

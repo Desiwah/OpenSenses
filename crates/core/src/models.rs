@@ -56,9 +56,20 @@ pub struct Model {
     pub gpu_level_to_firmware: bool,
     pub gpu_tables: &'static [GpuTable],
     pub toggles: &'static [Toggle],
-    pub cpu_overclock: bool,
-    pub power_limit: bool,
-    pub hotkeys: bool,
+    /// PredatorSense's `Feature.ini [MachineType] Type` (0 Cayman .. 4 Levante);
+    /// decides how the Turbo key and hotkeys behave.
+    pub machine_type: u8,
+    /// `[OverclockDetial] CPUOCWMIRule=1`: PredatorSense tells the firmware
+    /// the CPU level with `SetGamingMiscSetting(0x07 | level << 8)`. With no
+    /// separate CPU overclock (below), the CPU power level follows the GPU
+    /// level (`PowerLimitHidden=1`).
+    pub cpu_to_firmware: bool,
+    /// Separate CPU overclock levels for the unlocked "HK" CPUs these models
+    /// came with. Only the firmware part is used: PredatorSense also applied
+    /// encrypted Intel XTU profiles, which OpenSenses doesn't.
+    pub cpu_oc_levels: &'static [GpuMode],
+    /// Programmable keys per hotkey group (three groups), 0 for none.
+    pub hotkey_keys: u8,
 }
 
 const TEAL: Rgb = Rgb { r: 0x00, g: 0xAE, b: 0xC7 };
@@ -68,7 +79,12 @@ const FOUR: &[GpuMode] = &[GpuMode::Normal, GpuMode::Faster, GpuMode::Boosted, G
 const CPU_GPU: &[Fan] = &[Fan::Cpu, Fan::Gpu];
 
 const fn gpu(device: u16, subsystem: u32, core: &'static [i32], memory: &'static [i32]) -> GpuTable {
-    GpuTable { device, subsystem, core, memory }
+    GpuTable {
+        device,
+        subsystem,
+        core,
+        memory,
+    }
 }
 
 const HELIOS_300_GPUS: &[GpuTable] = &[
@@ -94,9 +110,10 @@ pub static MODELS: &[Model] = &[
         gpu_level_to_firmware: true,
         gpu_tables: HELIOS_300_GPUS,
         toggles: COVINI_TOGGLES,
-        cpu_overclock: false,
-        power_limit: false,
-        hotkeys: false,
+        machine_type: 1,
+        cpu_to_firmware: true,
+        cpu_oc_levels: &[],
+        hotkey_keys: 0,
     },
     Model {
         product: "Predator PH317-53",
@@ -110,9 +127,10 @@ pub static MODELS: &[Model] = &[
         gpu_level_to_firmware: true,
         gpu_tables: HELIOS_300_GPUS,
         toggles: COVINI_TOGGLES,
-        cpu_overclock: false,
-        power_limit: false,
-        hotkeys: false,
+        machine_type: 1,
+        cpu_to_firmware: true,
+        cpu_oc_levels: &[],
+        hotkey_keys: 0,
     },
     Model {
         product: "Predator PT315-51",
@@ -132,9 +150,10 @@ pub static MODELS: &[Model] = &[
             gpu(0x2191, 0x1342_1025, &[0, 100, 160], &[0, 160, 320]),
         ],
         toggles: COVINI_TOGGLES,
-        cpu_overclock: false,
-        power_limit: false,
-        hotkeys: false,
+        machine_type: 1,
+        cpu_to_firmware: true,
+        cpu_oc_levels: &[],
+        hotkey_keys: 0,
     },
     Model {
         product: "Predator PT515-51",
@@ -153,10 +172,17 @@ pub static MODELS: &[Model] = &[
             gpu(0x1F10, 0x132D_1025, &[0, 75, 100], &[120, 200, 270]),
             gpu(0x1ED0, 0x132D_1025, &[0, 75, 100], &[120, 200, 270]),
         ],
-        toggles: &[Toggle::BacklightTimeout, Toggle::LcdOverdrive, Toggle::DiscreteGpu, Toggle::WinKey, Toggle::BootAnimation],
-        cpu_overclock: false,
-        power_limit: false,
-        hotkeys: false,
+        toggles: &[
+            Toggle::BacklightTimeout,
+            Toggle::LcdOverdrive,
+            Toggle::DiscreteGpu,
+            Toggle::WinKey,
+            Toggle::BootAnimation,
+        ],
+        machine_type: 2,
+        cpu_to_firmware: false,
+        cpu_oc_levels: &[],
+        hotkey_keys: 0,
     },
     Model {
         product: "Predator PH517-51",
@@ -170,9 +196,10 @@ pub static MODELS: &[Model] = &[
         gpu_level_to_firmware: false,
         gpu_tables: &[gpu(0x1BE1, 0x1243_1025, &[0, 75, 150], &[0, 150, 300])],
         toggles: &[Toggle::WinKey],
-        cpu_overclock: true,
-        power_limit: true,
-        hotkeys: true,
+        machine_type: 0,
+        cpu_to_firmware: false,
+        cpu_oc_levels: &[],
+        hotkey_keys: 5,
     },
     Model {
         product: "Predator PH517-61",
@@ -187,9 +214,10 @@ pub static MODELS: &[Model] = &[
         gpu_level_to_firmware: false,
         gpu_tables: &[],
         toggles: &[Toggle::WinKey],
-        cpu_overclock: false,
-        power_limit: false,
-        hotkeys: true,
+        machine_type: 0,
+        cpu_to_firmware: false,
+        cpu_oc_levels: &[],
+        hotkey_keys: 5,
     },
     Model {
         product: "Predator PH717-71",
@@ -207,10 +235,12 @@ pub static MODELS: &[Model] = &[
         ],
         // Its Windows-key and backlight settings go through the per-key
         // keyboard's own controller, which isn't supported yet.
-        toggles: &[Toggle::BootAnimation],
-        cpu_overclock: true,
-        power_limit: false,
-        hotkeys: true,
+        // Win key and the backlight timeout go through the keyboard's USB controller.
+        toggles: &[Toggle::BacklightTimeout, Toggle::WinKey, Toggle::BootAnimation],
+        machine_type: 4,
+        cpu_to_firmware: true,
+        cpu_oc_levels: FOUR,
+        hotkey_keys: 3,
     },
     Model {
         product: "Predator PT917-71",
@@ -223,10 +253,12 @@ pub static MODELS: &[Model] = &[
         gpu_levels: THREE,
         gpu_level_to_firmware: true,
         gpu_tables: &[gpu(0x1ED0, 0x1323_1025, &[0, 60, 120], &[0, 200, 400])],
-        toggles: &[Toggle::BootAnimation],
-        cpu_overclock: true,
-        power_limit: false,
-        hotkeys: true,
+        // Win key and the backlight timeout go through the keyboard's USB controller.
+        toggles: &[Toggle::BacklightTimeout, Toggle::WinKey, Toggle::BootAnimation],
+        machine_type: 3,
+        cpu_to_firmware: true,
+        cpu_oc_levels: THREE,
+        hotkey_keys: 3,
     },
 ];
 

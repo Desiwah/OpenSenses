@@ -2115,6 +2115,7 @@ name = "opensenses-service"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "log",
  "pcore",
  "serde_json",

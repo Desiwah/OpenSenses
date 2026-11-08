@@ -3,10 +3,12 @@ pub mod backend;
 pub mod desktop;
 pub mod ipc;
 pub mod models;
+pub mod perkey;
 pub mod procs;
 pub mod protocol;
 pub mod settings;
 pub mod snapshot;
+pub mod useraction;
 
 use backend::{Backend, Observed};
 use settings::{Effect, FanMode, GpuMode, Rgb, Settings, Toggle};
@@ -48,6 +50,42 @@ pub fn apply_changes(hw: &mut dyn Backend, old: Option<&Settings>, s: &Settings)
                 let c = if l.zone_on[z as usize] { l.zones[z as usize] } else { Rgb::default() };
                 note("zone colour", hw.set_zone(z + 1, c));
             }
+        }
+    }
+
+    if caps.per_key && lighting_changed {
+        let l = &s.lighting;
+        let keyboard = |x: &settings::Lighting| {
+            (
+                x.effect,
+                x.zones,
+                x.colour,
+                x.speed,
+                x.brightness,
+                x.direction,
+                x.keys.get(..perkey::KEYS).map(|k| k.to_vec()),
+            )
+        };
+        let old_l = old.map(|o| &o.lighting);
+        if old_l.map(|o| keyboard(o) != keyboard(l)).unwrap_or(true) {
+            note("keyboard lighting", hw.set_per_key(l, old_l));
+        }
+        // Lights besides the keyboard: only what changed.
+        let e = &l.extras;
+        let was = old_l.map(|o| o.extras.clone()).unwrap_or_default();
+        let pick = |new: Option<bool>, old: Option<bool>| if all || new != old { new } else { None };
+        let pick_c = |new: Option<Rgb>, old: Option<Rgb>| if all || new != old { new } else { None };
+        let touch = l.keys.get(perkey::TOUCHPAD_SLOT).copied();
+        let old_touch = old_l.and_then(|o| o.keys.get(perkey::TOUCHPAD_SLOT).copied());
+        let diff = settings::ExtraLights {
+            heat_pipe: pick(e.heat_pipe, was.heat_pipe),
+            heat_pipe_colour: pick_c(e.heat_pipe_colour, was.heat_pipe_colour),
+            fan_led: pick(e.fan_led, was.fan_led),
+            fan_led_colour: pick_c(e.fan_led_colour, was.fan_led_colour),
+            touchpad: pick(e.touchpad, was.touchpad),
+        };
+        for e in hw.set_extra_lights(&diff, pick_c(touch, old_touch)) {
+            note("light", Err(anyhow::anyhow!(e)));
         }
     }
 
@@ -137,14 +175,22 @@ pub fn temperature_colour(celsius: u32) -> Rgb {
     let t = celsius as f32;
     if t <= STOPS[0].0 {
         let (r, g, b) = STOPS[0].1;
-        return Rgb { r: r as u8, g: g as u8, b: b as u8 };
+        return Rgb {
+            r: r as u8,
+            g: g as u8,
+            b: b as u8,
+        };
     }
     for w in STOPS.windows(2) {
         let ((t0, c0), (t1, c1)) = (w[0], w[1]);
         if t <= t1 {
             let k = (t - t0) / (t1 - t0);
             let mix = |a: f32, b: f32| (a + (b - a) * k).round() as u8;
-            return Rgb { r: mix(c0.0, c1.0), g: mix(c0.1, c1.1), b: mix(c0.2, c1.2) };
+            return Rgb {
+                r: mix(c0.0, c1.0),
+                g: mix(c0.1, c1.1),
+                b: mix(c0.2, c1.2),
+            };
         }
     }
     Rgb { r: 255, g: 0, b: 0 }
@@ -176,8 +222,16 @@ mod tests {
                 lighting: true,
                 fans: vec![Fan::Cpu, Fan::Gpu],
                 gpu_levels: vec![
-                    backend::GpuLevel { mode: GpuMode::Normal, core_mhz: 0, memory_mhz: 0 },
-                    backend::GpuLevel { mode: GpuMode::Turbo, core_mhz: 160, memory_mhz: 320 },
+                    backend::GpuLevel {
+                        mode: GpuMode::Normal,
+                        core_mhz: 0,
+                        memory_mhz: 0,
+                    },
+                    backend::GpuLevel {
+                        mode: GpuMode::Turbo,
+                        core_mhz: 160,
+                        memory_mhz: 320,
+                    },
                 ],
                 toggles: Toggle::ALL.to_vec(),
                 ..Default::default()
@@ -220,7 +274,13 @@ mod tests {
 
     #[test]
     fn colour_change_only_repaints_keyboard() {
-        let old = Settings { toggles: settings::Toggles { lcd_overdrive: Some(true), ..Default::default() }, ..Default::default() };
+        let old = Settings {
+            toggles: settings::Toggles {
+                lcd_overdrive: Some(true),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let mut new = old.clone();
         new.lighting.zones[0] = Rgb { r: 1, g: 2, b: 3 };
         let mut hw = Recorder::default();
@@ -235,7 +295,10 @@ mod tests {
     #[test]
     fn drift_detects_reset_colours() {
         let s = Settings::default();
-        let mut seen = Observed { zones: Some([Rgb { r: 0xFF, g: 0xA0, b: 0 }; 4]), ..Default::default() };
+        let mut seen = Observed {
+            zones: Some([Rgb { r: 0xFF, g: 0xA0, b: 0 }; 4]),
+            ..Default::default()
+        };
         assert!(drifted(&s, &seen, Some(0)));
         seen.zones = Some(s.lighting.zones);
         seen.fans = vec![(Fan::Cpu, FanMode::Auto), (Fan::Gpu, FanMode::Auto)];

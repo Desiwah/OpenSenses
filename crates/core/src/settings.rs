@@ -19,6 +19,15 @@ pub enum Effect {
     Zoom,
     /// Software effect: whole keyboard follows CPU temperature.
     Temperature,
+    // The per-key keyboards' own effects.
+    Reactive,
+    Marquee,
+    Ripple,
+    RainbowMarquee,
+    Raindrop,
+    CircleMarquee,
+    Hedge,
+    Spiral,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +35,9 @@ pub enum Effect {
 pub enum Direction {
     RightToLeft,
     LeftToRight,
+    /// Per-key keyboards' Wave only.
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +56,74 @@ pub enum GpuMode {
     /// Only the Helios 700 has this fourth level.
     Boosted,
     Turbo,
+}
+
+/// What pressing the Turbo key does (it toggles on and off).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TurboAction {
+    /// PredatorSense's behaviour: highest GPU (and CPU) level and fans on
+    /// Max; only on the charger.
+    #[default]
+    Performance,
+    /// Only the highest GPU (and CPU) level.
+    Overclock,
+    /// Only the fans on Max.
+    Fans,
+    /// Nothing.
+    Off,
+}
+
+/// One step of a keyboard macro: a key going down or up (by its
+/// `KeyboardEvent.code` name, e.g. "KeyA", "ShiftLeft"), or a pause.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MacroStep {
+    pub code: Option<String>,
+    pub down: bool,
+    /// Pause in milliseconds when `code` is empty.
+    pub delay_ms: u32,
+}
+
+/// Longest macro, as in PredatorSense.
+pub const MAX_MACRO_STEPS: usize = 50;
+
+/// What a programmable key does (PredatorSense's "key assignment" types).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HotkeyAction {
+    #[default]
+    None,
+    /// Steps through these GPU levels.
+    GpuLevels { cycle: Vec<GpuMode> },
+    /// Steps through these CPU levels (models with a CPU overclock).
+    CpuLevels { cycle: Vec<GpuMode> },
+    /// Steps through these fan modes.
+    FanModes { cycle: Vec<FanMode> },
+    /// Normal <-> highest CPU and GPU level together.
+    Performance,
+    /// The same as pressing the Turbo key.
+    Turbo,
+    /// Windows and Menu keys on/off.
+    WinKey,
+    /// LCD overdrive on/off.
+    LcdOverdrive,
+    /// Sticky Keys on/off (a setting of the signed-in user).
+    StickyKeys,
+    /// Opens a program, file or web address as the signed-in user.
+    LaunchApp { target: String },
+    /// Types a recorded key sequence.
+    Macro { steps: Vec<MacroStep> },
+    /// Opens OpenSenses.
+    OpenApp,
+}
+
+/// Programmable keys: three groups, switched with the laptop's group key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct HotkeyGroup {
+    pub name: String,
+    pub keys: Vec<HotkeyAction>,
 }
 
 /// The fans a model can have, in PredatorSense's terms.
@@ -71,6 +151,25 @@ pub struct Lighting {
     /// 0 ..= 100
     pub brightness: u8,
     pub direction: Direction,
+    /// Per-key keyboards: one colour per LED slot (static mode). Missing
+    /// slots use `colour`. Slot 126 is the Triton 900's touchpad.
+    pub keys: Vec<Rgb>,
+    /// Lights besides the keyboard (Helios 700 / Triton 900).
+    pub extras: ExtraLights,
+}
+
+/// Lights besides the keyboard. `None` leaves a light as it is.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExtraLights {
+    /// Helios 700: the light strip on the heat pipes, and its colour.
+    pub heat_pipe: Option<bool>,
+    pub heat_pipe_colour: Option<Rgb>,
+    /// Triton 900: the fan window light, and its colour.
+    pub fan_led: Option<bool>,
+    pub fan_led_colour: Option<Rgb>,
+    /// Touchpad light (Triton 900: its colour is key slot 126).
+    pub touchpad: Option<bool>,
 }
 
 impl Default for Lighting {
@@ -85,6 +184,8 @@ impl Default for Lighting {
             speed: 4,
             brightness: 100,
             direction: Direction::RightToLeft,
+            keys: Vec::new(),
+            extras: ExtraLights::default(),
         }
     }
 }
@@ -101,7 +202,12 @@ pub struct Fans {
 
 impl Default for Fans {
     fn default() -> Self {
-        Self { mode: FanMode::Auto, cpu_percent: Some(50), gpu_percent: Some(50), gpu2_percent: Some(50) }
+        Self {
+            mode: FanMode::Auto,
+            cpu_percent: Some(50),
+            gpu_percent: Some(50),
+            gpu2_percent: Some(50),
+        }
     }
 }
 
@@ -221,7 +327,15 @@ pub struct GameProfile {
 
 impl Default for GameProfile {
     fn default() -> Self {
-        Self { exe: String::new(), path: None, enabled: true, lighting: None, fans: None, gpu: None, win_key: None }
+        Self {
+            exe: String::new(),
+            path: None,
+            enabled: true,
+            lighting: None,
+            fans: None,
+            gpu: None,
+            win_key: None,
+        }
     }
 }
 
@@ -246,6 +360,12 @@ pub struct Settings {
     /// Re-apply these settings at startup, after sleep and when something
     /// (e.g. a Windows update) resets them.
     pub keep_applied: bool,
+    /// Separate CPU overclock level, on models that have one.
+    pub cpu: GpuMode,
+    /// What the Turbo key does.
+    pub turbo_key: TurboAction,
+    /// Programmable keys, three groups (models with hotkeys).
+    pub hotkeys: Vec<HotkeyGroup>,
     /// Switch to a game's profile while it runs.
     pub game_sync: bool,
     pub games: Vec<GameProfile>,
@@ -256,6 +376,8 @@ pub struct Settings {
     /// The laptop's original settings were restored: OpenSenses changes
     /// nothing until the user changes a setting again.
     pub restored: bool,
+    /// Where the OpenSenses app is, for the "Open OpenSenses" key.
+    pub app_path: Option<String>,
 }
 
 fn yes() -> bool {
@@ -271,10 +393,14 @@ impl Default for Settings {
             toggles: Toggles::default(),
             fahrenheit: false,
             keep_applied: true,
+            cpu: GpuMode::Normal,
+            turbo_key: TurboAction::default(),
+            hotkeys: Vec::new(),
             game_sync: true,
             games: Vec::new(),
             touched: false,
             restored: false,
+            app_path: None,
         }
     }
 }
@@ -301,6 +427,29 @@ impl Settings {
             }
         }
         self.games.retain(|g| !g.exe.is_empty());
+        if self.app_path.as_deref().map(|p| p.len() > 1024).unwrap_or(false) {
+            self.app_path = None;
+        }
+        self.hotkeys.truncate(3);
+        for g in &mut self.hotkeys {
+            g.name = g.name.chars().take(40).collect();
+            g.keys.truncate(5);
+            for k in &mut g.keys {
+                match k {
+                    HotkeyAction::GpuLevels { cycle } | HotkeyAction::CpuLevels { cycle } => cycle.truncate(4),
+                    HotkeyAction::FanModes { cycle } => cycle.truncate(3),
+                    HotkeyAction::LaunchApp { target } => *target = target.chars().take(1024).collect(),
+                    HotkeyAction::Macro { steps } => {
+                        steps.truncate(MAX_MACRO_STEPS);
+                        for st in steps {
+                            st.delay_ms = st.delay_ms.min(10_000);
+                            st.code = st.code.take().map(|c| c.chars().take(32).collect());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         self
     }
 
@@ -335,6 +484,7 @@ impl Settings {
 }
 
 fn sanitize_lighting(l: &mut Lighting) {
+    l.keys.truncate(crate::perkey::TOUCHPAD_SLOT + 1);
     l.speed = l.speed.clamp(1, 9);
     l.brightness = l.brightness.min(100);
 }
@@ -348,7 +498,9 @@ fn sanitize_fans(f: &mut Fans) {
 pub fn settings_path() -> PathBuf {
     #[cfg(windows)]
     {
-        let base = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+        let base = std::env::var_os("ProgramData")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
         base.join(crate::APP_DIR).join("settings.json")
     }
     #[cfg(not(windows))]
@@ -385,8 +537,16 @@ mod tests {
         assert_eq!(exe_name(r"C:\Games\Elden Ring\eldenring.EXE"), "eldenring.exe");
         assert_eq!(exe_name("/home/u/.steam/game.x86_64"), "game.x86_64");
         let mut s = Settings::default();
-        s.games.push(GameProfile { exe: r"D:\x\Game.exe".into(), gpu: Some(GpuMode::Turbo), win_key: Some(false), ..Default::default() });
-        s.games.push(GameProfile { exe: "  ".into(), ..Default::default() });
+        s.games.push(GameProfile {
+            exe: r"D:\x\Game.exe".into(),
+            gpu: Some(GpuMode::Turbo),
+            win_key: Some(false),
+            ..Default::default()
+        });
+        s.games.push(GameProfile {
+            exe: "  ".into(),
+            ..Default::default()
+        });
         let s = s.sanitized();
         assert_eq!(s.games.len(), 1);
         assert_eq!(s.games[0].exe, "game.exe");

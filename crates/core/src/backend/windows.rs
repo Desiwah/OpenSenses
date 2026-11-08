@@ -9,14 +9,13 @@ use crate::protocol::{Iface, Input};
 use anyhow::{anyhow, Context, Result};
 use windows::core::{BSTR, PCWSTR, VARIANT};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoInitializeSecurity, CoSetProxyBlanket, CLSCTX_INPROC_SERVER,
-    COINIT_MULTITHREADED, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL, RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
+    CoCreateInstance, CoInitializeEx, CoInitializeSecurity, CoSetProxyBlanket, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, EOAC_NONE, RPC_C_AUTHN_LEVEL_CALL,
+    RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
 };
 use windows::Win32::System::Rpc::{RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE};
 use windows::Win32::System::Variant::{InitVariantFromBuffer, VT_BSTR};
 use windows::Win32::System::Wmi::{
-    IWbemClassObject, IWbemLocator, IWbemServices, WbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY,
-    WBEM_GENERIC_FLAG_TYPE, WBEM_INFINITE,
+    IWbemClassObject, IWbemLocator, IWbemServices, WbemLocator, WBEM_FLAG_FORWARD_ONLY, WBEM_FLAG_RETURN_IMMEDIATELY, WBEM_GENERIC_FLAG_TYPE, WBEM_INFINITE,
 };
 
 fn wide(s: &str) -> Vec<u16> {
@@ -42,8 +41,26 @@ pub type WmiBackend = AcerBackend<Wmi>;
 
 /// A string value under HKLM\HARDWARE\DESCRIPTION\System\BIOS.
 fn bios_value(name: &str) -> Option<String> {
+    hklm_string(r"HARDWARE\DESCRIPTION\System\BIOS", name)
+}
+
+/// The processor's name, e.g. "Intel(R) Core(TM) i7-9750H CPU @ 2.60GHz".
+pub fn cpu_name() -> String {
+    hklm_string(r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString").unwrap_or_default()
+}
+
+/// On AC power, and the battery percentage, from Windows.
+pub fn power_status() -> Option<(bool, u8)> {
+    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    let mut s = SYSTEM_POWER_STATUS::default();
+    unsafe { GetSystemPowerStatus(&mut s).ok()? };
+    let pct = if s.BatteryLifePercent == 255 { 100 } else { s.BatteryLifePercent };
+    Some((s.ACLineStatus == 1, pct))
+}
+
+fn hklm_string(key: &str, name: &str) -> Option<String> {
     use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
-    let key = wide(r"HARDWARE\DESCRIPTION\System\BIOS");
+    let key = wide(key);
     let val = wide(name);
     let mut buf = [0u16; 256];
     let mut size = (buf.len() * 2) as u32;
@@ -84,15 +101,23 @@ unsafe fn open_class(svc: &IWbemServices, name: &'static str, input: &'static st
     let mut v = VARIANT::default();
     inst.Get(PCWSTR(wide("__PATH").as_ptr()), 0, &mut v, None, None)?;
     let path = BSTR::try_from(&v).map_err(|e| anyhow!("{name} instance path: {e}"))?;
-    Ok(WmiClass { name, class, path, input, output })
+    Ok(WmiClass {
+        name,
+        class,
+        path,
+        input,
+        output,
+    })
 }
 
 /// Opens the WMI classes and the NVIDIA driver interface.
 pub fn open() -> Result<WmiBackend> {
     let wmi = unsafe { Wmi::open()? };
-    let gpu = super::nvapi::Nvapi::open().map(|n| Box::new(n) as Box<dyn GpuClocks>).map_err(|e| format!("{e:#}"));
+    let gpu = super::nvapi::Nvapi::open()
+        .map(|n| Box::new(n) as Box<dyn GpuClocks>)
+        .map_err(|e| format!("{e:#}"));
     let product = bios_value("SystemProductName").unwrap_or_default();
-    Ok(AcerBackend::new(wmi, gpu, product, bios_value("SystemFamily"), true))
+    Ok(AcerBackend::new(wmi, gpu, product, bios_value("SystemFamily"), &cpu_name(), true))
 }
 
 impl Wmi {
@@ -148,7 +173,8 @@ impl Wmi {
         };
         params.Put(PCWSTR(wide(c.input).as_ptr()), 0, &value, 0)?;
         let mut out: Option<IWbemClassObject> = None;
-        self.svc.ExecMethod(&c.path, &BSTR::from(method), WBEM_GENERIC_FLAG_TYPE(0), None, &params, Some(&mut out), None)?;
+        self.svc
+            .ExecMethod(&c.path, &BSTR::from(method), WBEM_GENERIC_FLAG_TYPE(0), None, &params, Some(&mut out), None)?;
         let out = out.ok_or_else(|| anyhow!("{}.{method}: no output", c.name))?;
         let mut v = VARIANT::default();
         out.Get(PCWSTR(wide(c.output).as_ptr()), 0, &mut v, None, None)?;
@@ -172,7 +198,8 @@ impl Wmi {
             params.Put(PCWSTR(wide(c.input).as_ptr()), 0, &value, 0)?;
 
             let mut out: Option<IWbemClassObject> = None;
-            self.svc.ExecMethod(&c.path, &BSTR::from(method), WBEM_GENERIC_FLAG_TYPE(0), None, &params, Some(&mut out), None)?;
+            self.svc
+                .ExecMethod(&c.path, &BSTR::from(method), WBEM_GENERIC_FLAG_TYPE(0), None, &params, Some(&mut out), None)?;
             let out = out.ok_or_else(|| anyhow!("{}.{method}: no output", c.name))?;
             let mut v = VARIANT::default();
             out.Get(PCWSTR(wide(c.output).as_ptr()), 0, &mut v, None, None)?;
@@ -191,6 +218,55 @@ impl Wmi {
     }
 }
 
+/// Waits for the firmware's `APGeEvent` (Turbo key, hotkeys, backlight
+/// changes) and passes each `EventDetail` on. Runs on its own thread with
+/// its own WMI connection; reconnects if WMI goes away.
+pub fn listen_events(tx: std::sync::mpsc::Sender<[u8; 8]>) {
+    use windows::Win32::System::Ole::{SafeArrayAccessData, SafeArrayGetUBound, SafeArrayUnaccessData};
+    use windows::Win32::System::Variant::VT_ARRAY;
+    loop {
+        let r: Result<()> = (|| unsafe {
+            let wmi = Wmi::open()?;
+            let events = wmi.svc.ExecNotificationQuery(
+                &BSTR::from("WQL"),
+                &BSTR::from("SELECT * FROM APGeEvent"),
+                WBEM_GENERIC_FLAG_TYPE(WBEM_FLAG_FORWARD_ONLY.0 | WBEM_FLAG_RETURN_IMMEDIATELY.0),
+                None,
+            )?;
+            log::info!("listening for firmware events");
+            loop {
+                let mut objs: [Option<IWbemClassObject>; 1] = [None];
+                let mut got = 0u32;
+                events.Next(WBEM_INFINITE, &mut objs, &mut got).ok()?;
+                let Some(ev) = objs[0].take() else { continue };
+                let mut v = VARIANT::default();
+                ev.Get(PCWSTR(wide("EventDetail").as_ptr()), 0, &mut v, None, None)?;
+                let raw = v.as_raw();
+                if raw.Anonymous.Anonymous.vt & VT_ARRAY.0 == 0 {
+                    continue;
+                }
+                let sa = raw.Anonymous.Anonymous.Anonymous.parray as *const windows::Win32::System::Com::SAFEARRAY;
+                let n = (SafeArrayGetUBound(sa, 1).unwrap_or(-1) + 1).clamp(0, 8) as usize;
+                let mut p: *mut core::ffi::c_void = std::ptr::null_mut();
+                SafeArrayAccessData(sa, &mut p)?;
+                let mut detail = [0u8; 8];
+                std::ptr::copy_nonoverlapping(p as *const u8, detail.as_mut_ptr(), n);
+                let _ = SafeArrayUnaccessData(sa);
+                if tx.send(detail).is_err() {
+                    return Ok(());
+                }
+            }
+        })();
+        match r {
+            Ok(()) => return,
+            Err(e) => {
+                log::warn!("firmware events: {e:#}; retrying in 10 s");
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+        }
+    }
+}
+
 impl Transport for Wmi {
     fn name(&self) -> &'static str {
         "Windows WMI"
@@ -204,8 +280,7 @@ impl Transport for Wmi {
         unsafe {
             let v = self.call_raw(c, method, input)?;
             let mut buf = [0u8; 16];
-            windows::Win32::System::Variant::VariantToBuffer(&v, buf.as_mut_ptr() as *mut _, buf.len() as u32)
-                .map_err(|e| anyhow!("{method}: {e}"))?;
+            windows::Win32::System::Variant::VariantToBuffer(&v, buf.as_mut_ptr() as *mut _, buf.len() as u32).map_err(|e| anyhow!("{method}: {e}"))?;
             Ok(buf.to_vec())
         }
     }

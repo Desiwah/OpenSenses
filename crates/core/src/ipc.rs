@@ -12,11 +12,22 @@ use std::io::{BufRead, BufReader, Write};
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Request {
     GetState,
-    SetSettings { settings: Settings },
+    SetSettings {
+        settings: Settings,
+    },
     /// Re-send the saved settings to the hardware.
     Reapply,
     /// Put back the laptop's settings from before OpenSenses changed them.
     RestoreOriginal,
+    /// Turn Turbo on or off, as the Turbo key does.
+    SetTurbo {
+        on: bool,
+    },
+    /// Acts as if the firmware had sent this key event (for trying out
+    /// hotkey assignments without the hardware key).
+    TestKey {
+        detail: [u8; 8],
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -35,6 +46,17 @@ pub struct State {
     pub active_game: Option<String>,
     /// When the original settings were saved and where they came from.
     pub original: Option<crate::snapshot::Info>,
+    /// Turbo (from the Turbo key or the app) is on.
+    pub turbo: bool,
+    /// The CPU level the firmware was given (index into the levels).
+    pub cpu_level: Option<usize>,
+    /// On the charger, and battery percentage.
+    pub power: Option<(bool, u8)>,
+    /// Current hotkey group (1..3) on models with programmable keys.
+    pub hotkey_group: u8,
+    /// A short message about the last key press (e.g. "Turbo needs the
+    /// charger"), with a counter so the app can tell new ones apart.
+    pub notice: Option<(u32, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
