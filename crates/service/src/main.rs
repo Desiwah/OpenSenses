@@ -46,6 +46,9 @@ fn status() -> anyhow::Result<()> {
     println!("capabilities: {:?}", hw.capabilities());
     println!("sensors: {:?}", hw.sensors());
     println!("observed: {:?}", hw.observe());
+    for line in hw.diagnostics() {
+        println!("{line}");
+    }
     Ok(())
 }
 

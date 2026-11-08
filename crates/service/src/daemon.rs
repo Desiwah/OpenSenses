@@ -15,6 +15,7 @@ pub enum Job {
 
 const TICK: Duration = Duration::from_secs(2);
 const DRIFT_EVERY: Duration = Duration::from_secs(30);
+const SLEEP_GAP: Duration = Duration::from_secs(30);
 
 /// Fans are forced to Max while either chip is this hot in Custom mode,
 /// and handed back once both drop below the release point.
@@ -30,6 +31,7 @@ struct Daemon {
     errors: Vec<String>,
     guard: bool,
     temp_colour: Option<Rgb>,
+    toggles_now: pcore::settings::Toggles,
 }
 
 impl Daemon {
@@ -44,14 +46,28 @@ impl Daemon {
                 None => self.errors.clone(),
             },
             overheat_guard: self.guard,
+            toggles_now: self.toggles_now,
         }
     }
 
     fn apply(&mut self) {
+        self.apply_from(None);
+    }
+
+    /// Sends what changed since `old` (or everything) and refreshes the
+    /// toggle states shown in the app.
+    fn apply_from(&mut self, old: Option<&Settings>) {
         let Some(hw) = self.hw.as_mut() else { return };
-        self.errors = pcore::apply(hw.as_mut(), &self.settings);
-        self.temp_colour = None;
-        self.guard = false;
+        self.errors = pcore::apply_changes(hw.as_mut(), old, &self.settings);
+        if old.map(|o| o.lighting != self.settings.lighting).unwrap_or(true) {
+            self.temp_colour = None;
+        }
+        if old.map(|o| o.fans != self.settings.fans).unwrap_or(true) {
+            self.guard = false;
+        }
+        if old.map(|o| o.toggles != self.settings.toggles).unwrap_or(true) && hw.capabilities().toggles {
+            self.toggles_now = hw.observe().toggles;
+        }
         for e in &self.errors {
             log::warn!("{e}");
         }
@@ -61,11 +77,11 @@ impl Daemon {
         match req {
             Request::GetState => {}
             Request::SetSettings { settings: s } => {
-                self.settings = s.sanitized();
+                let old = std::mem::replace(&mut self.settings, s.sanitized());
                 if let Err(e) = settings::save(&self.settings) {
                     log::error!("saving settings: {e:#}");
                 }
-                self.apply();
+                self.apply_from(Some(&old));
             }
             Request::Reapply => self.apply(),
         }
@@ -114,6 +130,7 @@ impl Daemon {
         }
         let Some(hw) = self.hw.as_mut() else { return };
         let seen = hw.observe();
+        self.toggles_now = seen.toggles;
         if pcore::drifted(&self.settings, &seen) {
             log::info!("hardware state changed behind our back ({seen:?}), re-applying");
             self.apply();
@@ -169,28 +186,41 @@ pub fn run(jobs: Receiver<Job>) {
         errors: Vec::new(),
         guard: false,
         temp_colour: None,
+        toggles_now: Default::default(),
     };
+    if let Some(hw) = d.hw.as_mut() {
+        if hw.capabilities().toggles {
+            d.toggles_now = hw.observe().toggles;
+        }
+    }
     if d.settings.keep_applied && !first_run {
         d.apply();
     }
 
-    let mut last_tick = SystemTime::now();
+    // Ticks run on a fixed schedule even while the app is sending requests
+    // every couple of seconds; requests are answered in between.
+    let mut next_tick = Instant::now();
+    let mut last_tick_wall = SystemTime::now();
     let mut last_drift = Instant::now();
     loop {
-        match jobs.recv_timeout(TICK) {
+        match jobs.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
             Ok(Job::Ipc(req, reply)) => {
                 let _ = reply.send(d.handle(req));
-                continue;
             }
             Ok(Job::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
+        if Instant::now() < next_tick {
+            continue;
+        }
+        next_tick = Instant::now() + TICK;
 
-        // A big jump in wall-clock time means the laptop slept; firmware
-        // often forgets lighting and fan settings across sleep.
+        // Ticks are 2 s apart, so a big jump in wall-clock time between two
+        // of them means the laptop was asleep; firmware often forgets
+        // lighting and fan settings across sleep.
         let now = SystemTime::now();
-        let slept = now.duration_since(last_tick).map(|d| d > TICK * 10).unwrap_or(true);
-        last_tick = now;
+        let slept = now.duration_since(last_tick_wall).map(|gap| gap > SLEEP_GAP).unwrap_or(false);
+        last_tick_wall = now;
         if slept && d.settings.keep_applied {
             log::info!("woke from sleep, re-applying");
             d.apply();
