@@ -1,10 +1,62 @@
 # OpenSenses
 
 Keyboard lighting, fan control, GPU overclock levels and temperature
-monitoring for Acer Predator laptops, on Windows and Linux. A replacement for
-PredatorSense, which Acer no longer offers for older models.
+monitoring for Acer Predator laptops, on Windows and Linux. An unofficial,
+open source alternative to Acer's PredatorSense.
 
-Not affiliated with Acer.
+> **Experimental software, use at your own risk.** Please read
+> [Before you use it](#before-you-use-it) first.
+
+## Why I made this
+
+I have an Acer Predator Helios 300 (PH317-53). PredatorSense stopped working
+for me: the version I had installed wouldn't open anymore, Windows updates
+kept resetting its settings, and Acer has removed the download for my model
+from its website, so there was no way to get it back. Without it there was no
+way to control the keyboard lighting, the fans or the GPU levels.
+
+So I built my own. I also wanted it to run on Linux, to make it easier for
+people with these laptops who use Linux, or who are thinking of switching, to
+keep these features. Keep in mind the Linux version hasn't been tested on real
+hardware yet (see below), so it may or may not work there.
+
+## Before you use it
+
+Please read this before installing.
+
+- **It's vibe coded.** I built this with heavy help from an AI coding
+  assistant. I'm not a professional driver or firmware developer, and the code
+  hasn't been reviewed by anyone who is.
+- **It changes low-level hardware settings.** OpenSenses talks directly to
+  the laptop's firmware and, on Linux, installs a kernel driver. It changes
+  fan behaviour, GPU clock speeds and other firmware settings. Mistakes here
+  could cause overheating, crashes, instability, data loss or damage to your
+  hardware, and could affect your warranty.
+- **Most of it I can't test myself.** I only own one laptop, a PH317-53, and
+  only tested it on Windows. Every other model, and all of the Linux version,
+  follow data and documentation I couldn't check on real hardware; the app
+  marks those features "(experimental)". They may not work, or may behave
+  differently than expected.
+- **No warranty, no responsibility.** This software is provided "as is",
+  without warranty of any kind (see the [license](LICENSE)). I'm not
+  responsible for any damage, data loss, hardware failure, voided warranty or
+  any other problem that comes from using it. You use it entirely at your own
+  risk. If you're not comfortable with that, don't install it.
+- **Not affiliated with Acer or NVIDIA.** This is an independent hobby
+  project. It isn't made, endorsed or supported by Acer, NVIDIA or anyone
+  else. Acer, Predator, PredatorSense, Helios, Triton and Nitro are trademarks
+  of Acer Inc.; NVIDIA is a trademark of NVIDIA Corporation. They're mentioned
+  only to say which hardware this works with.
+- **No Acer code.** OpenSenses doesn't include or redistribute any part of
+  PredatorSense. It was written from scratch by working out which firmware
+  settings the laptops use, so that people can keep using hardware they own.
+  How that was done is described in [docs/protocol.md](docs/protocol.md).
+- **For problems with your laptop, contact Acer.** Don't contact Acer about
+  OpenSenses, and don't expect them to support it.
+
+If something goes wrong, uninstall OpenSenses; that stops it from changing
+anything. Some settings it already changed are stored in the laptop's firmware
+and stay until you change them back.
 
 ## What it does
 
@@ -57,7 +109,9 @@ programmable hotkeys on the models that have them.
 ### Windows
 
 Download the installer from Releases and run it. It installs the app and the
-`OpenSenses` background service (it needs administrator rights once).
+`OpenSenses` background service (it needs administrator rights once). Close
+PredatorSense first if it's still installed, so the two don't fight over the
+same settings.
 
 ### Linux
 
@@ -114,6 +168,16 @@ npx tauri build
 On Windows copy `opensenses-service.exe` instead. GitHub Actions builds the
 Windows installer and the Linux packages on every push.
 
+## Testing and feedback
+
+If you have one of the other models, or try it on Linux, please open an issue
+and say what worked and what didn't. That's the only way the "(experimental)"
+labels can come off. Please include your laptop model and, on Linux, your
+distribution.
+
 ## License
 
-MIT
+The app and the background service are under the [MIT license](LICENSE). The
+Linux kernel driver in `driver/` is under the GNU GPL, version 2 or later
+([driver/LICENSE](driver/LICENSE)), as Linux kernel drivers have to be. Both
+licenses come without any warranty.
