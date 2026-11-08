@@ -1,6 +1,23 @@
 {
   "bundle": {
     "targets": ["deb", "rpm", "appimage"],
-    "resources": { "bin/opensenses-service": "opensenses-service" }
+    "resources": {
+      "bin/opensenses-service": "opensenses-service",
+      "../driver/opensenses.c": "driver/opensenses.c",
+      "../driver/Makefile": "driver/Makefile",
+      "../driver/dkms.conf": "driver/dkms.conf"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["dkms"],
+        "postInstallScript": "linux/postinstall.sh",
+        "preRemoveScript": "linux/preremove.sh"
+      },
+      "rpm": {
+        "depends": ["dkms", "kernel-devel"],
+        "postInstallScript": "linux/postinstall.sh",
+        "preRemoveScript": "linux/preremove.sh"
+      }
+    }
   }
 }
