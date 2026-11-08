@@ -1,8 +1,8 @@
 # OpenSenses
 
 Keyboard lighting, fan control, GPU overclock levels and temperature
-monitoring for the Acer Predator Helios 300 (PH317-53), on Windows and Linux.
-A replacement for PredatorSense, which Acer no longer offers for this laptop.
+monitoring for Acer Predator laptops, on Windows and Linux. A replacement for
+PredatorSense, which Acer no longer offers for older models.
 
 Not affiliated with Acer.
 
@@ -23,6 +23,29 @@ Not affiliated with Acer.
 - **Keeps your settings:** a background service applies them at startup and
   after sleep, and puts them back if a Windows update or anything else
   changes them.
+
+## Supported laptops
+
+OpenSenses reads the model from the BIOS and shows only what that laptop can
+do, using the per-model data PredatorSense 3.00 shipped with:
+
+| Model | Lighting | Fans | GPU levels | Settings |
+| ----- | -------- | ---- | ---------- | -------- |
+| Helios 300 (PH315-52, PH317-53) | 4 zones | CPU, GPU | 3 | backlight timeout, LCD overdrive, Windows key, boot animation |
+| Triton 300 (PT315-51) | 4 zones | CPU, GPU | 3 | same as Helios 300 |
+| Triton 500 (PT515-51) | 4 zones | CPU, 2 × GPU | 3 | same, plus NVIDIA-only mode |
+| Helios 500 (PH517-51, PH517-61) | 4 zones | CPU, GPU | 3 (Intel model) | Windows key |
+| Helios 700 (PH717-71) | per-key (planned) | CPU, GPU | 4 | boot animation |
+| Triton 900 (PT917-71) | per-key (planned) | CPU, GPU | 3 | boot animation |
+
+The PH317-53 is tested on real hardware; the others follow PredatorSense's own
+data for them. Other Predator and Nitro laptops with the same firmware
+interface work too: OpenSenses asks the firmware what it answers to and
+enables those features. GPU levels are offered only for GPUs PredatorSense had
+overclock numbers for.
+
+Still to come: per-key keyboards, CPU overclocking and power limits, and
+programmable hotkeys on the models that have them.
 
 ## Install
 
