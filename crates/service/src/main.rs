@@ -4,6 +4,7 @@
 
 mod daemon;
 mod server;
+mod user;
 
 use daemon::Job;
 use std::sync::mpsc;
@@ -32,6 +33,22 @@ pub fn run_until(stop: mpsc::Receiver<()>) {
             log::error!("IPC server: {e:#}");
         }
     });
+    // Key events from the firmware (Turbo key, programmable keys).
+    let event_tx = tx.clone();
+    std::thread::spawn(move || {
+        let (etx, erx) = mpsc::channel::<[u8; 8]>();
+        std::thread::spawn(move || pcore::backend::listen_events(etx));
+        for e in erx {
+            if event_tx.send(Job::Firmware(e)).is_err() {
+                break;
+            }
+        }
+    });
+    #[cfg(target_os = "linux")]
+    {
+        let key_tx = tx.clone();
+        std::thread::spawn(move || user::watch_ps_key(key_tx));
+    }
     std::thread::spawn(move || {
         let _ = stop.recv();
         let _ = tx.send(Job::Stop);
@@ -96,6 +113,10 @@ fn main() {
             Ok(())
         }
         "status" => status(),
+        // Started by the service in the signed-in user's session.
+        "user-action" => user::user_action(&std::env::args().nth(2).unwrap_or_default()),
+        #[cfg(windows)]
+        "agent" => user::agent(),
         "service" => {
             init_log();
             platform::run_as_service()
@@ -119,8 +140,8 @@ mod platform {
     use std::sync::mpsc;
     use std::time::Duration;
     use windows_service::service::{
-        ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceInfo,
-        ServiceStartType, ServiceState, ServiceStatus, ServiceType,
+        ServiceAccess, ServiceControl, ServiceControlAccept, ServiceErrorControl, ServiceExitCode, ServiceInfo, ServiceStartType, ServiceState, ServiceStatus,
+        ServiceType,
     };
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
@@ -145,7 +166,9 @@ mod platform {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
             _ => ServiceControlHandlerResult::NotImplemented,
         };
-        let Ok(status) = service_control_handler::register(NAME, handler) else { return };
+        let Ok(status) = service_control_handler::register(NAME, handler) else {
+            return;
+        };
         let set = |state, accept| {
             let _ = status.set_service_status(ServiceStatus {
                 service_type: ServiceType::OWN_PROCESS,
@@ -231,16 +254,24 @@ mod driver {
     }
 
     fn have(cmd: &str) -> bool {
-        Command::new("sh").args(["-c", &format!("command -v {cmd}")]).output().map(|o| o.status.success()).unwrap_or(false)
+        Command::new("sh")
+            .args(["-c", &format!("command -v {cmd}")])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// The driver sources: next to the service (AppImage, packages) or
     /// where a package or an earlier install put them.
     pub fn sources(exe: &Path) -> Option<PathBuf> {
         let dir = exe.parent()?;
-        [dir.join("driver"), PathBuf::from(format!("/usr/src/opensenses-{VERSION}")), PathBuf::from("/usr/local/lib/opensenses/driver")]
-            .into_iter()
-            .find(|d| d.join("opensenses.c").is_file())
+        [
+            dir.join("driver"),
+            PathBuf::from(format!("/usr/src/opensenses-{VERSION}")),
+            PathBuf::from("/usr/local/lib/opensenses/driver"),
+        ]
+        .into_iter()
+        .find(|d| d.join("opensenses.c").is_file())
     }
 
     fn copy_sources(from: &Path, to: &Path) -> std::io::Result<()> {

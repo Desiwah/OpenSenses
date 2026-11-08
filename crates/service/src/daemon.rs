@@ -4,15 +4,25 @@
 
 use pcore::backend::{self, Backend, Sensors};
 use pcore::ipc::{Request, Response, State};
-use pcore::settings::{self, Effect, FanMode, Rgb, Settings};
+use pcore::settings::{self, Effect, FanMode, GpuMode, HotkeyAction, Rgb, Settings, TurboAction};
 use std::collections::HashSet;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant, SystemTime};
 
 pub enum Job {
     Ipc(Request, Sender<Response>),
+    /// A key event from the firmware (`EventDetail` bytes).
+    Firmware([u8; 8]),
+    /// The PredatorSense key was pressed (Linux; on Windows the per-user
+    /// agent opens the app itself).
+    #[cfg_attr(windows, allow(dead_code))]
+    PredatorSenseKey,
     Stop,
 }
+
+/// PredatorSense only raises the CPU level on the charger with the battery
+/// at 40% or more.
+const CPU_MIN_BATTERY: u8 = 40;
 
 const TICK: Duration = Duration::from_secs(2);
 const DRIFT_EVERY: Duration = Duration::from_secs(30);
@@ -44,6 +54,15 @@ struct Daemon {
     guard: bool,
     temp_colour: Option<Rgb>,
     toggles_now: pcore::settings::Toggles,
+    /// Turbo mode from the Turbo key (or the app).
+    turbo: bool,
+    /// CPU level index and fan curve last sent.
+    cpu_sent: Option<(usize, u8)>,
+    power: Option<(bool, u8)>,
+    hotkey_group: u8,
+    notice: Option<(u32, String)>,
+    #[cfg(windows)]
+    agent: crate::user::Agent,
 }
 
 impl Daemon {
@@ -61,6 +80,226 @@ impl Daemon {
             toggles_now: self.toggles_now,
             active_game: self.game.and_then(|i| self.settings.games.get(i)).map(|g| g.exe.clone()),
             original: pcore::snapshot::load().map(|s| s.info()),
+            turbo: self.turbo,
+            cpu_level: self.cpu_sent.map(|c| c.0),
+            power: self.power,
+            hotkey_group: self.hotkey_group,
+            notice: self.notice.clone(),
+        }
+    }
+
+    fn say(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        log::info!("notice: {text}");
+        let n = self.notice.as_ref().map(|(n, _)| n + 1).unwrap_or(1);
+        self.notice = Some((n, text));
+    }
+
+    fn caps(&self) -> pcore::backend::Capabilities {
+        self.hw.as_ref().map(|h| h.capabilities()).unwrap_or_default()
+    }
+
+    fn on_ac(&mut self) -> bool {
+        self.power = backend::power_status();
+        self.power.map(|(ac, _)| ac).unwrap_or(true)
+    }
+
+    /// Sends the CPU level and the firmware fan curve that go with the
+    /// current levels, as PredatorSense does: CPU raised only on the
+    /// charger with enough battery, curve = max(CPU, GPU level) + 1.
+    fn sync_cpu(&mut self, force: bool) {
+        // Nothing is sent until the user has changed something (or after a restore).
+        if self.settings.restored || !self.settings.touched {
+            return;
+        }
+        self.power = backend::power_status();
+        let caps = self.caps();
+        let cpu_control = caps.cpu_follows_gpu || !caps.cpu_levels.is_empty();
+        if !cpu_control && !caps.fan_table {
+            return;
+        }
+        let gpu_idx = caps.gpu_level(self.applied.gpu).map(|(i, _)| i).unwrap_or(0);
+        let want = if !caps.cpu_levels.is_empty() {
+            caps.cpu_levels.iter().position(|m| *m == self.applied.cpu).unwrap_or(0)
+        } else if caps.cpu_follows_gpu {
+            gpu_idx
+        } else {
+            0
+        };
+        let (ac, pct) = self.power.unwrap_or((true, 100));
+        let cpu_idx = if ac && pct >= CPU_MIN_BATTERY { want } else { 0 };
+        let curve = pcore::protocol::fan_table_for(cpu_idx, gpu_idx);
+        if !force && self.cpu_sent == Some((cpu_idx, curve)) {
+            return;
+        }
+        let Some(hw) = self.hw.as_mut() else { return };
+        if cpu_control {
+            if let Err(e) = hw.set_cpu_level(cpu_idx) {
+                self.errors.push(format!("CPU level: {e:#}"));
+            }
+        }
+        if caps.fan_table {
+            if let Err(e) = hw.set_fan_table(curve) {
+                self.errors.push(format!("fan curve: {e:#}"));
+            }
+        }
+        if cpu_control {
+            log::info!("CPU level {cpu_idx} (wanted {want}, AC {ac}, battery {pct}%), fan curve {curve}");
+        } else {
+            log::info!("fan curve {curve}");
+        }
+        self.cpu_sent = Some((cpu_idx, curve));
+    }
+
+    /// Turbo on or off: the Turbo key's action laid over the settings.
+    fn set_turbo(&mut self, on: bool) {
+        if on == self.turbo {
+            return;
+        }
+        if self.settings.restored {
+            self.settings.restored = false;
+            self.save();
+        }
+        if on && !self.on_ac() {
+            self.say("Turbo needs the charger plugged in");
+            return;
+        }
+        self.turbo = on;
+        self.apply_since_last();
+        let led = on || self.applied.gpu == GpuMode::Turbo;
+        if let Some(hw) = self.hw.as_mut() {
+            let _ = hw.set_turbo_led(led);
+        }
+        self.say(if on { "Turbo on" } else { "Turbo off" });
+    }
+
+    fn save(&self) {
+        if let Err(e) = settings::save(&self.settings) {
+            log::error!("saving settings: {e:#}");
+        }
+    }
+
+    /// A key event from the firmware.
+    /// `test` is the app's "Try it" button: byte 3 then names the group.
+    fn on_firmware_event(&mut self, d: [u8; 8], test: bool) {
+        log::info!("{} event {d:02X?}", if test { "test" } else { "firmware" });
+        let caps = self.caps();
+        match (d[0], d[1]) {
+            (7, 4) if caps.turbo_key && self.settings.turbo_key != TurboAction::Off => self.set_turbo(!self.turbo),
+            (7, 1) if (1..=3).contains(&d[2]) => {
+                self.hotkey_group = d[2];
+                let name = self.settings.hotkeys.get(d[2] as usize - 1).map(|g| g.name.clone()).unwrap_or_default();
+                self.say(if name.is_empty() {
+                    format!("Hotkey group {}", d[2])
+                } else {
+                    format!("Hotkey group {}: {name}", d[2])
+                });
+            }
+            (7, 2) if caps.hotkey_keys > 0 && (1..=caps.hotkey_keys).contains(&d[2]) => {
+                let group = if test && (1..=3).contains(&d[3]) {
+                    d[3]
+                } else {
+                    if let Some(g) = self.hw.as_mut().and_then(|h| h.hotkey_group()) {
+                        self.hotkey_group = g;
+                    }
+                    self.hotkey_group
+                };
+                let group = group.clamp(1, 3) as usize;
+                let action = self
+                    .settings
+                    .hotkeys
+                    .get(group - 1)
+                    .and_then(|g| g.keys.get(d[2] as usize - 1))
+                    .cloned()
+                    .unwrap_or_default();
+                self.run_action(&action);
+            }
+            _ => {}
+        }
+    }
+
+    /// Carries out a programmable key's action.
+    fn run_action(&mut self, a: &HotkeyAction) {
+        let caps = self.caps();
+        let next = |cycle: &[GpuMode], now: GpuMode| -> Option<GpuMode> {
+            let i = cycle.iter().position(|m| *m == now).map(|i| i + 1).unwrap_or(0);
+            cycle.get(i % cycle.len().max(1)).copied()
+        };
+        let mut changed = true;
+        match a {
+            HotkeyAction::None => changed = false,
+            HotkeyAction::GpuLevels { cycle } => match next(cycle, self.settings.gpu).filter(|m| caps.gpu_level(*m).is_some()) {
+                Some(m) => {
+                    self.settings.gpu = m;
+                    self.say(format!("GPU: {m:?}"));
+                }
+                None => changed = false,
+            },
+            HotkeyAction::CpuLevels { cycle } => {
+                if !self.on_ac() {
+                    self.say("CPU overclocking needs the charger plugged in");
+                    changed = false;
+                } else if let Some(m) = next(cycle, self.settings.cpu).filter(|m| caps.cpu_levels.contains(m)) {
+                    self.settings.cpu = m;
+                    self.say(format!("CPU: {m:?}"));
+                } else {
+                    changed = false;
+                }
+            }
+            HotkeyAction::FanModes { cycle } if !cycle.is_empty() => {
+                let i = cycle.iter().position(|m| *m == self.settings.fans.mode).map(|i| i + 1).unwrap_or(0);
+                let m = cycle[i % cycle.len()];
+                self.settings.fans.mode = m;
+                self.say(format!("Fans: {m:?}"));
+            }
+            HotkeyAction::FanModes { .. } => changed = false,
+            HotkeyAction::Performance => {
+                let top_gpu = caps.gpu_levels.last().map(|l| l.mode).unwrap_or(GpuMode::Normal);
+                let top_cpu = caps.cpu_levels.last().copied().unwrap_or(GpuMode::Normal);
+                let at_top = self.settings.gpu == top_gpu && (caps.cpu_levels.is_empty() || self.settings.cpu == top_cpu);
+                if !at_top && !self.on_ac() {
+                    self.say("Extreme performance needs the charger plugged in");
+                    changed = false;
+                } else {
+                    self.settings.gpu = if at_top { GpuMode::Normal } else { top_gpu };
+                    self.settings.cpu = if at_top { GpuMode::Normal } else { top_cpu };
+                    self.say(if at_top { "Performance: Normal" } else { "Performance: Extreme" });
+                }
+            }
+            HotkeyAction::Turbo => {
+                self.set_turbo(!self.turbo);
+                changed = false;
+            }
+            HotkeyAction::WinKey | HotkeyAction::LcdOverdrive => {
+                let t = if *a == HotkeyAction::WinKey {
+                    pcore::settings::Toggle::WinKey
+                } else {
+                    pcore::settings::Toggle::LcdOverdrive
+                };
+                if caps.has_toggle(t) {
+                    let now = self.settings.toggles.get(t).or(self.toggles_now.get(t)).unwrap_or(true);
+                    self.settings.toggles.set(t, Some(!now));
+                    let label = if t == pcore::settings::Toggle::WinKey {
+                        "Windows key"
+                    } else {
+                        "LCD overdrive"
+                    };
+                    self.say(format!("{label} {}", if now { "off" } else { "on" }));
+                } else {
+                    changed = false;
+                }
+            }
+            HotkeyAction::StickyKeys | HotkeyAction::LaunchApp { .. } | HotkeyAction::Macro { .. } | HotkeyAction::OpenApp => {
+                changed = false;
+                if let Err(e) = crate::user::run(a) {
+                    self.say(format!("Couldn't run the key's action: {e:#}"));
+                }
+            }
+        }
+        if changed {
+            self.settings.restored = false;
+            self.save();
+            self.apply_since_last();
         }
     }
 
@@ -120,6 +359,8 @@ impl Daemon {
         self.restore_win_key = None;
         self.guard = false;
         self.temp_colour = None;
+        self.turbo = false;
+        self.cpu_sent = None;
         self.applied = self.settings.clone();
         if let Some(hw) = self.hw.as_mut() {
             self.toggles_now = hw.observe().toggles;
@@ -128,7 +369,7 @@ impl Daemon {
 
     /// The settings the hardware should have right now.
     fn effective(&self) -> Settings {
-        match self.game {
+        let mut s = match self.game {
             Some(i) => self.settings.with_game(i),
             None => {
                 let mut s = self.settings.clone();
@@ -137,7 +378,28 @@ impl Daemon {
                 }
                 s
             }
+        };
+        if self.turbo {
+            let caps = self.caps();
+            let (oc, fans) = match self.settings.turbo_key {
+                TurboAction::Performance => (true, true),
+                TurboAction::Overclock => (true, false),
+                TurboAction::Fans => (false, true),
+                TurboAction::Off => (false, false),
+            };
+            if oc {
+                if let Some(top) = caps.gpu_levels.last() {
+                    s.gpu = top.mode;
+                }
+                if let Some(top) = caps.cpu_levels.last() {
+                    s.cpu = *top;
+                }
+            }
+            if fans && !caps.fans.is_empty() {
+                s.fans.mode = FanMode::Max;
+            }
         }
+        s
     }
 
     /// Picks the game profile for what is running now. True when it changed.
@@ -192,10 +454,15 @@ impl Daemon {
         for e in &self.errors {
             log::warn!("{e}");
         }
+        if self.turbo {
+            // The LED shows Turbo even when the key only drives the fans.
+            let _ = hw.set_turbo_led(true);
+        }
         self.applied = new;
         if self.game.is_none() {
             self.restore_win_key = None;
         }
+        self.sync_cpu(old.is_none());
     }
 
     fn apply_since_last(&mut self) {
@@ -208,7 +475,13 @@ impl Daemon {
             Request::GetState => {}
             Request::SetSettings { settings: s } => {
                 let playing = self.game.and_then(|i| self.settings.games.get(i)).map(|g| g.exe.clone());
-                self.settings = s.sanitized();
+                let s = s.sanitized();
+                // Picking a GPU level or fan mode yourself ends Turbo.
+                if self.turbo && (s.gpu != self.settings.gpu || s.cpu != self.settings.cpu || s.fans.mode != self.settings.fans.mode) {
+                    log::info!("Turbo off: levels changed in the app");
+                    self.turbo = false;
+                }
+                self.settings = s;
                 if let Err(e) = settings::save(&self.settings) {
                     log::error!("saving settings: {e:#}");
                 }
@@ -229,6 +502,8 @@ impl Daemon {
                 self.apply()
             }
             Request::RestoreOriginal => self.restore_original(),
+            Request::SetTurbo { on } => self.set_turbo(on),
+            Request::TestKey { detail } => self.on_firmware_event(detail, true),
         }
         Response::State(self.state())
     }
@@ -236,6 +511,11 @@ impl Daemon {
     fn tick(&mut self) {
         if self.hw.is_none() {
             return;
+        }
+        #[cfg(windows)]
+        {
+            let want = self.caps().ps_key;
+            self.agent.keep(want);
         }
         if self.settings.restored {
             // Hands off after a restore: sensors only.
@@ -251,6 +531,14 @@ impl Daemon {
                 self.apply_since_last();
             }
         }
+
+        // Charger unplugged: Turbo ends, and the CPU level drops (sync_cpu).
+        if self.turbo && !backend::power_status().map(|(ac, _)| ac).unwrap_or(true) {
+            self.turbo = false;
+            self.apply_since_last();
+            self.say("Turbo off: the charger was unplugged");
+        }
+        self.sync_cpu(false);
 
         let Some(hw) = self.hw.as_mut() else { return };
         self.sensors = hw.sensors();
@@ -345,7 +633,11 @@ pub fn run(jobs: Receiver<Job>) {
     if pcore::snapshot::load().is_none() {
         if let Some(h) = hw.as_mut() {
             let already_changed = !first_run && initial.touched;
-            let snap = if already_changed { h.factory_snapshot().or_else(|| h.snapshot()) } else { h.snapshot() };
+            let snap = if already_changed {
+                h.factory_snapshot().or_else(|| h.snapshot())
+            } else {
+                h.snapshot()
+            };
             if let Some(s) = snap {
                 match pcore::snapshot::save_once(&s) {
                     Ok(()) => log::info!("saved the original settings ({:?})", s.source),
@@ -372,6 +664,13 @@ pub fn run(jobs: Receiver<Job>) {
         guard: false,
         temp_colour: None,
         toggles_now: Default::default(),
+        turbo: false,
+        cpu_sent: None,
+        power: None,
+        hotkey_group: 1,
+        notice: None,
+        #[cfg(windows)]
+        agent: Default::default(),
     };
     if let Some(hw) = d.hw.as_mut() {
         if !hw.capabilities().toggles.is_empty() {
@@ -391,6 +690,11 @@ pub fn run(jobs: Receiver<Job>) {
         match jobs.recv_timeout(next_tick.saturating_duration_since(Instant::now())) {
             Ok(Job::Ipc(req, reply)) => {
                 let _ = reply.send(d.handle(req));
+            }
+            Ok(Job::Firmware(e)) => d.on_firmware_event(e, false),
+            Ok(Job::PredatorSenseKey) => {
+                log::info!("PredatorSense key");
+                d.run_action(&HotkeyAction::OpenApp);
             }
             Ok(Job::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
