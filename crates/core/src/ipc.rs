@@ -15,6 +15,8 @@ pub enum Request {
     SetSettings { settings: Settings },
     /// Re-send the saved settings to the hardware.
     Reapply,
+    /// Put back the laptop's settings from before OpenSenses changed them.
+    RestoreOriginal,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -31,6 +33,8 @@ pub struct State {
     pub toggles_now: Toggles,
     /// Program name of the game whose GameSync profile is in use.
     pub active_game: Option<String>,
+    /// When the original settings were saved and where they came from.
+    pub original: Option<crate::snapshot::Info>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

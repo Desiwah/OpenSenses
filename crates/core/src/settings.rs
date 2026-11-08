@@ -249,6 +249,17 @@ pub struct Settings {
     /// Switch to a game's profile while it runs.
     pub game_sync: bool,
     pub games: Vec<GameProfile>,
+    /// OpenSenses has sent settings to this laptop's hardware. Settings
+    /// files from versions before this field always had, hence the default.
+    #[serde(default = "yes")]
+    pub touched: bool,
+    /// The laptop's original settings were restored: OpenSenses changes
+    /// nothing until the user changes a setting again.
+    pub restored: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -262,6 +273,8 @@ impl Default for Settings {
             keep_applied: true,
             game_sync: true,
             games: Vec::new(),
+            touched: false,
+            restored: false,
         }
     }
 }
