@@ -49,12 +49,44 @@ fn status() -> anyhow::Result<()> {
     for line in hw.diagnostics() {
         println!("{line}");
     }
+    println!("live snapshot: {:?}", hw.snapshot());
+    println!("saved original: {:?}", pcore::snapshot::load());
+    Ok(())
+}
+
+/// Puts the laptop's original settings back; the uninstallers run this.
+/// Goes through the running service when there is one (so it also stops
+/// re-applying), otherwise talks to the hardware directly.
+fn restore() -> anyhow::Result<()> {
+    use pcore::ipc::{request, Request, Response};
+    match request(&Request::RestoreOriginal) {
+        Ok(Response::State(st)) => {
+            for e in &st.errors {
+                eprintln!("{e}");
+            }
+            println!("original settings restored");
+            return Ok(());
+        }
+        Ok(Response::Error(e)) => eprintln!("service: {e}"),
+        Err(_) => {}
+    }
+    let snap = pcore::snapshot::load().ok_or_else(|| anyhow::anyhow!("no original settings were saved on this laptop"))?;
+    let mut hw = pcore::backend::open()?;
+    for e in hw.restore(&snap) {
+        eprintln!("{e}");
+    }
+    if let Some(mut s) = pcore::settings::load() {
+        s.restored = true;
+        let _ = pcore::settings::save(&s);
+    }
+    println!("original settings restored");
     Ok(())
 }
 
 fn main() {
     let arg = std::env::args().nth(1).unwrap_or_default();
     let result = match arg.as_str() {
+        "restore" => restore(),
         "install" => platform::install(),
         "uninstall" => platform::uninstall(),
         "run" => {
@@ -69,7 +101,7 @@ fn main() {
             platform::run_as_service()
         }
         _ => {
-            eprintln!("usage: opensenses-service <install | uninstall | run | status>");
+            eprintln!("usage: opensenses-service <install | uninstall | restore | run | status>");
             std::process::exit(2);
         }
     };
@@ -330,12 +362,20 @@ mod platform {
         );
         std::fs::write(UNIT, unit).context("run this with sudo")?;
         Command::new("systemctl").args(["daemon-reload"]).status()?;
-        Command::new("systemctl").args(["enable", "--now", "opensenses.service"]).status()?;
+        Command::new("systemctl").args(["enable", "opensenses.service"]).status()?;
+        // Restart rather than start, so a running service picks up a newly
+        // built driver.
+        Command::new("systemctl").args(["restart", "opensenses.service"]).status()?;
         println!("service installed and started");
         Ok(())
     }
 
+    /// On Linux this is only used for a real removal (package removal or
+    /// by hand), so it puts the laptop's original settings back first.
     pub fn uninstall() -> Result<()> {
+        if let Err(e) = crate::restore() {
+            eprintln!("restoring the original settings: {e:#}");
+        }
         let _ = Command::new("systemctl").args(["disable", "--now", "opensenses.service"]).status();
         let _ = std::fs::remove_file(UNIT);
         let _ = std::fs::remove_dir_all(std::path::Path::new(COPY).parent().unwrap());

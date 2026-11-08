@@ -33,6 +33,11 @@ async fn set_settings(settings: Settings) -> Result<State, String> {
 }
 
 #[tauri::command]
+async fn restore_original() -> Result<State, String> {
+    tauri::async_runtime::spawn_blocking(|| call(Request::RestoreOriginal)).await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn reapply() -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(|| call(Request::Reapply)).await.map_err(|e| e.to_string())?
 }
@@ -203,7 +208,7 @@ mod linux_a11y {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, running_apps, app_icon, find_program, pick_program, install_service, get_sticky_keys, set_sticky_keys])
+        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, restore_original, running_apps, app_icon, find_program, pick_program, install_service, get_sticky_keys, set_sticky_keys])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }
