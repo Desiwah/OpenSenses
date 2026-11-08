@@ -83,6 +83,7 @@ jobs:
           name: OpenSenses-linux
           path: |
             target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
             target/release/bundle/appimage/*.AppImage
 
       - name: Publish release
@@ -91,4 +92,5 @@ jobs:
         with:
           files: |
             target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
             target/release/bundle/appimage/*.AppImage
