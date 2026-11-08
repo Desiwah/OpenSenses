@@ -182,6 +182,7 @@ input[type="range"] { width: 100%; accent-color: var(--focus); }
   margin: 0 0 18px; padding: 10px 14px; max-width: 760px; border: 1px solid var(--focus);
   border-radius: var(--radius-s); background: #283150; color: var(--text);
 }
+.banner.warn { border-color: var(--warn); background: #3a3122; }
 .add-game { display: flex; align-items: flex-end; gap: 10px; margin: 22px 0 6px; max-width: 760px; }
 .text-field { display: grid; gap: 4px; flex: 1; color: var(--muted); font-size: 13px; }
 .text-field input, .game select {

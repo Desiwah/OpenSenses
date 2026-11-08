@@ -509,9 +509,11 @@ function renderSettings() {
     return switchRow(expTitle(title, key), desc, value, false,
       (on) => change((s) => { s.toggles = s.toggles || {}; s.toggles[key] = on; }));
   });
-  if (caps.sticky_keys) rows.push(switchRow("Sticky Keys",
-    "A Windows accessibility feature: Shift, Ctrl, Alt and the Windows key stay pressed until you press the next key. This is a setting of your Windows account.",
-    stickyKeys, stickyKeys == null,
+  if (caps.sticky_keys && stickyKeys != null) rows.push(switchRow("Sticky Keys",
+    IS_WINDOWS
+      ? "A Windows accessibility feature: Shift, Ctrl, Alt and the Windows key stay pressed until you press the next key. This is a setting of your Windows account."
+      : "An accessibility feature: Shift, Ctrl, Alt and the Super key stay pressed until you press the next key. This is a setting of your desktop.",
+    stickyKeys, false,
     async (on) => {
       try { await invoke("set_sticky_keys", { on }); stickyKeys = on; setStatus(on ? "Sticky Keys on" : "Sticky Keys off"); }
       catch (e) { setStatus(String(e), true); }
@@ -1002,6 +1004,8 @@ function renderLive() {
 
 function renderSections() {
   const caps = (state && state.capabilities) || {};
+  $("noticeBanner").hidden = !caps.notice;
+  $("noticeBanner").textContent = caps.notice || "";
   const show = {
     lighting: caps.lighting || caps.per_key,
     fans: (caps.fans || []).length > 0,
@@ -1065,6 +1069,7 @@ $("installService").onclick = async () => {
 };
 
 if (!IS_WINDOWS) {
+  $("keepLabel").textContent = "Keep settings applied after restarts, sleep and system updates";
   $("gameExe").placeholder = "Type to search running programs, or a program name";
   $("gamesHint").textContent = "Start the game and it shows up here, or use Browse… to pick its program file. Windows games run through Proton or Wine show up as their .exe name.";
 }

@@ -22,6 +22,7 @@
     </nav>
 
     <main>
+      <p class="banner warn" id="noticeBanner" role="status" hidden></p>
       <p class="banner" id="gameBanner" role="status" hidden></p>
       <!-- Lighting -->
       <section class="page" id="page-lighting">
@@ -161,7 +162,7 @@
   <footer class="status" id="status">
     <label class="switch">
       <input type="checkbox" id="keepApplied">
-      <span>Keep settings applied after restarts, sleep and Windows updates</span>
+      <span id="keepLabel">Keep settings applied after restarts, sleep and Windows updates</span>
     </label>
     <span class="status-msg" id="statusMsg" role="status"></span>
     <button class="ghost" id="reapply">Apply again</button>
