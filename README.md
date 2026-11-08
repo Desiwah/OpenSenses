@@ -16,7 +16,10 @@ Not affiliated with Acer.
   custom mode (CPU 95 °C or GPU 90 °C), both fans go to Max until it cools
   below 80 °C.
 - **GPU:** PredatorSense's Normal, Faster and Turbo overclock levels.
-- **Monitor:** CPU, GPU and system temperatures and both fan speeds.
+- **Monitor:** CPU, GPU and system temperatures and both fan speeds, in °C
+  or °F.
+- **Settings:** keyboard lighting off after 30 seconds idle, LCD overdrive,
+  Windows and Menu keys on or off, boot animation and sound, and Sticky Keys.
 - **Keeps your settings:** a background service applies them at startup and
   after sleep, and puts them back if a Windows update or anything else
   changes them.
@@ -35,8 +38,8 @@ Install the `.deb` or run the AppImage. Lighting needs the
 temperatures and fan speeds come from the kernel's `acer` hwmon sensors. Then
 set up the service from the app, or run `sudo opensenses-service install`.
 
-Fan modes and GPU levels are Windows-only for now: the Linux module doesn't
-expose them.
+Fan modes, GPU levels and the settings toggles are Windows-only for now: the
+Linux module doesn't expose them.
 
 ## How it works
 
