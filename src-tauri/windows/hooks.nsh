@@ -8,7 +8,12 @@
   nsExec::ExecToLog '"$INSTDIR\opensenses-service.exe" install'
 !macroend
 
+; On a real uninstall (not an update), put the laptop's settings back to
+; how they were before OpenSenses changed them, then remove the service.
 !macro NSIS_HOOK_PREUNINSTALL
+  ${If} $UpdateMode <> 1
+    nsExec::ExecToLog '"$INSTDIR\opensenses-service.exe" restore'
+  ${EndIf}
   nsExec::ExecToLog '"$INSTDIR\opensenses-service.exe" uninstall'
   Sleep 1500
 !macroend
