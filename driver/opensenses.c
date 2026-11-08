@@ -12,12 +12,23 @@
  * OPENSENSES_IOC_CALL with the method and its input bytes; the reply is
  * the method's integer or buffer result. Nothing else is reachable.
  *
+ * On kernel 6.12 and later it also receives the firmware's key events
+ * (APGeEvent 676AA15E-6A47-4D9F-A2CC-1E6D18D14026: Turbo key, programmable
+ * keys), which read() returns as 8-byte records. Since 6.12 the WMI core
+ * delivers events to both acer-wmi's handler and a bound driver; on older
+ * kernels binding the event would take them away from acer-wmi, so the
+ * driver doesn't listen there.
+ *
  * The in-tree acer-wmi driver calls some of the same methods without
  * binding these devices, so both can be loaded at once.
  */
 
 #include <linux/acpi.h>
 #include <linux/fs.h>
+#include <linux/kfifo.h>
+#include <linux/poll.h>
+#include <linux/version.h>
+#include <linux/wait.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -27,6 +38,18 @@
 
 #define GAMING_GUID "7A4DDFE7-5B5D-40B4-8595-4408E0CC7F56"
 #define APGE_GUID "61EF69EA-865C-4BC3-A502-A0DEBA0CB531"
+#define EVENT_GUID "676AA15E-6A47-4D9F-A2CC-1E6D18D14026"
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+#define OS_EVENTS 1
+#else
+#define OS_EVENTS 0
+#endif
+
+/* Up to 32 pending 8-byte events; older ones are dropped when full. */
+static DEFINE_KFIFO(events, u8, 256);
+static DEFINE_SPINLOCK(events_lock);
+static DECLARE_WAIT_QUEUE_HEAD(events_wait);
 
 enum { OS_GAMING = 0, OS_APGE = 1, OS_COUNT };
 
@@ -112,8 +135,45 @@ static long opensenses_ioctl(struct file *file, unsigned int cmd, unsigned long 
 	return 0;
 }
 
+static ssize_t opensenses_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
+{
+	u8 ev[8];
+	unsigned int got;
+	int ret;
+
+	if (!OS_EVENTS)
+		return 0;
+	if (count < sizeof(ev))
+		return -EINVAL;
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	for (;;) {
+		spin_lock_irq(&events_lock);
+		got = kfifo_out(&events, ev, sizeof(ev));
+		spin_unlock_irq(&events_lock);
+		if (got == sizeof(ev))
+			break;
+		if (file->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		ret = wait_event_interruptible(events_wait, !kfifo_is_empty(&events));
+		if (ret)
+			return ret;
+	}
+	if (copy_to_user(buf, ev, sizeof(ev)))
+		return -EFAULT;
+	return sizeof(ev);
+}
+
+static __poll_t opensenses_poll(struct file *file, poll_table *wait)
+{
+	poll_wait(file, &events_wait, wait);
+	return kfifo_is_empty(&events) ? 0 : EPOLLIN | EPOLLRDNORM;
+}
+
 static const struct file_operations opensenses_fops = {
 	.owner = THIS_MODULE,
+	.read = opensenses_read,
+	.poll = opensenses_poll,
 	.unlocked_ioctl = opensenses_ioctl,
 	.compat_ioctl = opensenses_ioctl,
 };
@@ -125,11 +185,41 @@ static struct miscdevice opensenses_dev = {
 	.mode = 0600,
 };
 
-static const int iface_ids[OS_COUNT] = { OS_GAMING, OS_APGE };
+static const int iface_ids[OS_COUNT + 1] = { OS_GAMING, OS_APGE, OS_COUNT };
+
+static void opensenses_notify(struct wmi_device *wdev, union acpi_object *obj)
+{
+	u8 ev[8] = { 0 };
+	unsigned long flags;
+
+	if (!obj)
+		return;
+	if (obj->type == ACPI_TYPE_BUFFER)
+		memcpy(ev, obj->buffer.pointer, min_t(u32, obj->buffer.length, sizeof(ev)));
+	else if (obj->type == ACPI_TYPE_INTEGER)
+		memcpy(ev, &obj->integer.value, sizeof(ev));
+	else
+		return;
+	spin_lock_irqsave(&events_lock, flags);
+	if (kfifo_avail(&events) < sizeof(ev)) {
+		u8 old[8];
+
+		if (kfifo_out(&events, old, sizeof(old)) != sizeof(old))
+			kfifo_reset(&events);
+	}
+	kfifo_in(&events, ev, sizeof(ev));
+	spin_unlock_irqrestore(&events_lock, flags);
+	wake_up_interruptible(&events_wait);
+}
 
 static int opensenses_probe(struct wmi_device *wdev, const void *context)
 {
 	int i = *(const int *)context;
+
+	if (i == OS_COUNT) {
+		dev_info(&wdev->dev, "OpenSenses receiving key events\n");
+		return 0;
+	}
 
 	mutex_lock(&call_lock);
 	bound[i] = wdev;
@@ -152,6 +242,9 @@ static void opensenses_remove(struct wmi_device *wdev)
 static const struct wmi_device_id opensenses_ids[] = {
 	{ .guid_string = GAMING_GUID, .context = &iface_ids[OS_GAMING] },
 	{ .guid_string = APGE_GUID, .context = &iface_ids[OS_APGE] },
+#if OS_EVENTS
+	{ .guid_string = EVENT_GUID, .context = &iface_ids[OS_COUNT] },
+#endif
 	{}
 };
 MODULE_DEVICE_TABLE(wmi, opensenses_ids);
@@ -161,6 +254,7 @@ static struct wmi_driver opensenses_driver = {
 	.id_table = opensenses_ids,
 	.probe = opensenses_probe,
 	.remove = opensenses_remove,
+	.notify = opensenses_notify,
 };
 
 static int __init opensenses_init(void)
