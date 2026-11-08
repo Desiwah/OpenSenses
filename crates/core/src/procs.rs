@@ -10,6 +10,9 @@ use std::collections::{BTreeMap, HashSet};
 pub struct App {
     pub name: String,
     pub path: Option<String>,
+    /// Started by Steam as a game (Linux).
+    #[serde(skip)]
+    pub steam_game: bool,
 }
 
 /// Every running program, in any session (the service sees them all).
@@ -20,18 +23,41 @@ pub fn running() -> HashSet<String> {
 /// Programs with a window open in the signed-in user's session (what Task
 /// Manager calls apps), sorted, for the app's "pick a running game" list.
 pub fn user_apps() -> Vec<App> {
+    // On Linux there's no reliable way to see which programs have windows
+    // (Wayland hides that), so keep what looks like an app: installed
+    // desktop apps, Windows programs run through Wine/Proton, Steam games.
+    #[cfg(target_os = "linux")]
+    let installed = crate::desktop::apps();
     let mut by_name: BTreeMap<String, Option<String>> = BTreeMap::new();
     for a in list(true) {
         if IGNORED.contains(&a.name.as_str()) {
             continue;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let wine = a.name.ends_with(".exe");
+            if LINUX_IGNORED.contains(&a.name.as_str()) || !(wine || a.steam_game || installed.contains_key(&a.name)) {
+                continue;
+            }
         }
         let slot = by_name.entry(a.name).or_default();
         if slot.is_none() {
             *slot = a.path;
         }
     }
-    by_name.into_iter().map(|(name, path)| App { name, path }).collect()
+    by_name.into_iter().map(|(name, path)| App { name, path, steam_game: false }).collect()
 }
+
+/// Linux desktop plumbing and the parts of Wine, Proton and Steam that run
+/// next to every game.
+#[cfg(target_os = "linux")]
+const LINUX_IGNORED: &[&str] = &[
+    "plasmashell", "kwin_wayland", "kwin_x11", "gnome-shell", "xwayland", "kded6", "kded5", "krunner",
+    "systemsettings", "polkit-kde-authentication-agent-1", "xdg-desktop-portal", "steamwebhelper",
+    "opensenses", "steam", "steam.exe", "services.exe", "winedevice.exe", "plugplay.exe", "rpcss.exe",
+    "tabtip.exe", "start.exe", "wineboot.exe", "winedbg.exe", "rundll32.exe", "msiexec.exe", "cmd.exe",
+    "pressure-vessel-wrap", "reaper", "gamescope", "mangohud",
+];
 
 /// Windows and desktop plumbing nobody would make a game profile for.
 const IGNORED: &[&str] = &[
@@ -87,7 +113,7 @@ fn list(this_session_only: bool) -> Vec<App> {
                 let name = String::from_utf16_lossy(&e.szExeFile[..len]).to_lowercase();
                 if !name.is_empty() {
                     let path = if this_session_only { path_of(e.th32ProcessID) } else { None };
-                    out.push(App { name, path });
+                    out.push(App { name, path, steam_game: false });
                 }
             }
             ok = Process32NextW(snap, &mut e).is_ok();
@@ -171,7 +197,66 @@ pub fn find_program(exe: &str) -> Option<String> {
     hits.into_iter().max_by_key(|(t, _)| *t).map(|(_, p)| p)
 }
 
-#[cfg(not(windows))]
+/// Looks for a game's program on Linux: in Steam libraries and the usual
+/// Lutris / Heroic game folders (a few levels deep), or, for native apps,
+/// the program an installed desktop entry runs.
+#[cfg(target_os = "linux")]
+pub fn find_program(exe: &str) -> Option<String> {
+    use std::path::{Path, PathBuf};
+    let want = crate::settings::exe_name(exe);
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for steam in [home.join(".local/share/Steam"), home.join(".steam/steam"), home.join(".var/app/com.valvesoftware.Steam/data/Steam")] {
+        roots.push(steam.join("steamapps/common"));
+        // Extra Steam libraries on other drives.
+        if let Ok(vdf) = std::fs::read_to_string(steam.join("steamapps/libraryfolders.vdf")) {
+            for line in vdf.lines() {
+                let l = line.trim();
+                if let Some(rest) = l.strip_prefix("\"path\"") {
+                    let p = rest.trim().trim_matches('"').replace("\\\\", "\\");
+                    roots.push(Path::new(&p).join("steamapps/common"));
+                }
+            }
+        }
+    }
+    roots.push(home.join("Games"));
+    roots.sort();
+    roots.dedup();
+
+    fn walk(dir: &Path, want: &str, depth: u32, budget: &mut u32) -> Option<PathBuf> {
+        if depth == 0 || *budget == 0 {
+            return None;
+        }
+        let rd = std::fs::read_dir(dir).ok()?;
+        let mut subdirs = Vec::new();
+        for e in rd.flatten() {
+            *budget = budget.saturating_sub(1);
+            let p = e.path();
+            let ft = match e.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                subdirs.push(p);
+            } else if e.file_name().to_string_lossy().to_lowercase() == want {
+                return Some(p);
+            }
+        }
+        subdirs.into_iter().find_map(|d| walk(&d, want, depth - 1, budget))
+    }
+
+    let mut budget = 200_000;
+    for r in &roots {
+        if let Some(p) = walk(r, &want, 5, &mut budget) {
+            return Some(p.to_string_lossy().into_owned());
+        }
+    }
+    // A native app: the program its desktop entry's Exec runs, via PATH.
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).map(|d| d.join(&want)).find(|p| p.is_file()).map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn find_program(_exe: &str) -> Option<String> {
     None
 }
@@ -201,18 +286,32 @@ fn list(this_user_only: bool) -> Vec<App> {
             .ok()
             .and_then(|b| b.split(|&c| c == 0).next().map(|a| String::from_utf8_lossy(a).into_owned()))
             .filter(|a| !a.is_empty());
-        let n = match arg0 {
-            Some(a) => crate::settings::exe_name(&a),
+        let n = match &arg0 {
+            Some(a) => crate::settings::exe_name(a),
             None => std::fs::read_to_string(path.join("comm")).map(|c| c.trim().to_lowercase()).unwrap_or_default(),
         };
-        if !n.is_empty() {
-            let path = if this_user_only {
-                std::fs::read_link(path.join("exe")).ok().map(|p| p.to_string_lossy().into_owned())
-            } else {
-                None
-            };
-            out.push(App { name: n, path });
+        if n.is_empty() {
+            continue;
         }
+        let mut app = App { name: n, path: None, steam_game: false };
+        if this_user_only {
+            #[cfg(target_os = "linux")]
+            {
+                let env = crate::desktop::environ(&path);
+                // Steam sets this for the game it starts (and its children).
+                app.steam_game = env.contains_key("SteamAppId") || env.contains_key("SteamGameId");
+                app.path = if app.name.ends_with(".exe") {
+                    arg0.as_deref().and_then(|a| crate::desktop::wine_path(a, &env)).map(|p| p.to_string_lossy().into_owned())
+                } else {
+                    std::fs::read_link(path.join("exe")).ok().map(|p| p.to_string_lossy().into_owned())
+                };
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                app.path = std::fs::read_link(path.join("exe")).ok().map(|p| p.to_string_lossy().into_owned());
+            }
+        }
+        out.push(app);
     }
     out
 }
