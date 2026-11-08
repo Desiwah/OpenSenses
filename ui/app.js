@@ -96,6 +96,10 @@ const GPU_LEVEL_HINTS = { normal: "Stock clocks", faster: "A mild overclock", bo
 const FAN_NAMES = { cpu: "CPU fan", gpu: "GPU fan", gpu2: "Second GPU fan" };
 const mhz = (v) => `${v >= 0 ? "+" : ""}${v} MHz`;
 
+// Windows programs end in .exe; Linux ones usually have no extension, though
+// Windows games run through Proton still show up as game.exe.
+const IS_WINDOWS = /Windows/.test(navigator.userAgent);
+
 // Features not tested on this model's hardware get "(experimental)".
 const isExp = (key) => !!(state && state.capabilities && (state.capabilities.experimental || []).includes(key));
 const expTitle = (title, key) => (isExp(key) ? `${title} (experimental)` : title);
@@ -805,7 +809,7 @@ function addGame() {
   const typed = $("gameExe").value.trim().replace(/^"(.*)"$/, "$1"); // Explorer's "Copy as path" adds quotes
   let exe = exeName(typed);
   if (!exe) return;
-  if (!exe.includes(".")) exe += ".exe";
+  if (IS_WINDOWS && !exe.includes(".")) exe += ".exe";
   const seen = runningApps.find((a) => a.name === exe && a.path);
   addProgram(exe, /[\\/]/.test(typed) ? typed : seen ? seen.path : null);
 }
@@ -1059,6 +1063,11 @@ $("installService").onclick = async () => {
   try { await invoke("install_service"); } catch (e) { $("nsDetail").textContent = String(e); return; }
   setTimeout(() => refresh(true), 1500);
 };
+
+if (!IS_WINDOWS) {
+  $("gameExe").placeholder = "Type to search running programs, or a program name";
+  $("gamesHint").textContent = "Start the game and it shows up here, or use Browse… to pick its program file. Windows games run through Proton or Wine show up as their .exe name.";
+}
 
 drawKeyboard();
 buildGauges();
