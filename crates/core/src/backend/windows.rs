@@ -4,9 +4,10 @@
 //! objects here are not thread-safe, so the backend must stay on the thread
 //! that opened it.
 
-use super::{Backend, Capabilities, Observed, Sensors};
+use super::{Backend, Capabilities, GpuLevel, Observed, Sensors};
+use crate::models::{self, Model};
 use crate::protocol as p;
-use crate::settings::{FanMode, GpuMode, Rgb, Toggle, Toggles};
+use crate::settings::{Fan, FanMode, GpuMode, Rgb, Toggle, Toggles};
 use anyhow::{anyhow, bail, Context, Result};
 use windows::core::{BSTR, PCWSTR, VARIANT};
 use windows::Win32::System::Com::{
@@ -44,6 +45,33 @@ pub struct WmiBackend {
     gaming: WmiClass,
     apge: Option<WmiClass>,
     nvapi: std::result::Result<super::nvapi::Nvapi, String>,
+    model: Option<&'static Model>,
+    caps: Capabilities,
+}
+
+/// A string value under HKLM\HARDWARE\DESCRIPTION\System\BIOS.
+fn bios_value(name: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+    let key = wide(r"HARDWARE\DESCRIPTION\System\BIOS");
+    let val = wide(name);
+    let mut buf = [0u16; 256];
+    let mut size = (buf.len() * 2) as u32;
+    let st = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(key.as_ptr()),
+            PCWSTR(val.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr() as *mut _),
+            Some(&mut size),
+        )
+    };
+    if st.is_err() {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]).trim().to_string())
 }
 
 unsafe fn open_class(svc: &IWbemServices, name: &'static str, input: &'static str, output: &'static str) -> Result<WmiClass> {
@@ -114,7 +142,12 @@ impl WmiBackend {
                 }
             };
             let nvapi = super::nvapi::Nvapi::open().map_err(|e| format!("{e:#}"));
-            Ok(Self { svc, gaming, apge, nvapi })
+            let product = bios_value("SystemProductName").unwrap_or_default();
+            let model = models::lookup(&product);
+            let mut me = Self { svc, gaming, apge, nvapi, model, caps: Capabilities::default() };
+            me.caps = me.detect(product);
+            log::info!("hardware: {:?}", me.caps);
+            Ok(me)
         }
     }
 
@@ -170,18 +203,102 @@ impl WmiBackend {
         self.call("GetGamingSysInfo", Input::U32(p::sensor_query(id))).ok().and_then(p::decode_sensor)
     }
 
+    /// Works out what this laptop supports: from the model table when the
+    /// model is known, otherwise by asking the firmware what answers.
+    fn detect(&self, product: String) -> Capabilities {
+        let gpu_ids = self.nvapi.as_ref().ok().and_then(|nv| nv.pci_ids().ok());
+        let table = gpu_ids.and_then(|(dev, sub)| models::gpu_table(self.model, dev, sub));
+        let levels = |modes: &[GpuMode]| -> Vec<GpuLevel> {
+            match table {
+                Some(t) => modes
+                    .iter()
+                    .zip(t.core.iter().zip(t.memory.iter()))
+                    .map(|(&mode, (&core_mhz, &memory_mhz))| GpuLevel { mode, core_mhz, memory_mhz })
+                    .collect(),
+                None => Vec::new(),
+            }
+        };
+
+        if let Some(m) = self.model {
+            return Capabilities {
+                product,
+                model_name: Some(m.name.to_string()),
+                known_model: true,
+                lighting: m.four_zone,
+                per_key: m.per_key,
+                fans: m.fans.to_vec(),
+                gpu_levels: levels(m.gpu_levels),
+                sensors: true,
+                toggles: m.toggles.iter().copied().filter(|t| *t != Toggle::BacklightTimeout || self.apge.is_some()).collect(),
+                sticky_keys: true,
+                coming: super::coming_features(m),
+            };
+        }
+
+        // Unknown model: keep only what the firmware answers to.
+        let ok = |r: Result<u64>| r.map(|v| v & 0xFF == 0).unwrap_or(false);
+        let lighting = ok(self.call("GetGamingRgbKb", Input::U32(1)));
+        let mut fans = Vec::new();
+        if ok(self.call("GetGamingFanBehavior", Input::U32(p::fan_query(&[Fan::Cpu, Fan::Gpu])))) {
+            fans.extend([Fan::Cpu, Fan::Gpu]);
+        }
+        let mut toggles = Vec::new();
+        if self.read_backlight().is_some() {
+            toggles.push(Toggle::BacklightTimeout);
+        }
+        if self.call("GetGamingProfile", Input::U32(0)).ok().and_then(p::decode_profile).is_some() {
+            toggles.extend([Toggle::LcdOverdrive, Toggle::WinKey]);
+        }
+        if self.call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_MODE as u32)).ok().and_then(p::decode_discrete_gpu).is_some() {
+            toggles.push(Toggle::DiscreteGpu);
+        }
+        if self.call("GetGamingMiscSetting", Input::U32(p::MISC_BOOT_ANIMATION as u32)).ok().and_then(p::decode_misc_flag).is_some() {
+            toggles.push(Toggle::BootAnimation);
+        }
+        let sensors = self.sensor(p::SENSOR_CPU_TEMP).is_some();
+        Capabilities {
+            product,
+            model_name: bios_value("SystemFamily").filter(|s| !s.is_empty()),
+            known_model: false,
+            lighting,
+            per_key: false,
+            fans,
+            // Only GPUs PredatorSense had numbers for; the firmware value is
+            // skipped since this model's convention is unknown.
+            gpu_levels: levels(&[GpuMode::Normal, GpuMode::Faster, GpuMode::Turbo]),
+            sensors,
+            toggles,
+            sticky_keys: true,
+            coming: Vec::new(),
+        }
+    }
+
+    fn read_backlight(&self) -> Option<bool> {
+        self.apge
+            .as_ref()
+            .and_then(|c| self.call_on(c, "GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET)).ok())
+            .and_then(p::decode_backlight_timeout)
+    }
+
+    fn gpu_to_firmware(&self) -> bool {
+        self.model.map(|m| m.gpu_level_to_firmware).unwrap_or(false)
+    }
+
     fn read_toggles(&self) -> Toggles {
         let profile = self.call("GetGamingProfile", Input::U32(0)).ok().and_then(p::decode_profile);
         let boot = self.call("GetGamingMiscSetting", Input::U32(p::MISC_BOOT_ANIMATION as u32)).ok().and_then(p::decode_misc_flag);
-        // The firmware's read-back for the backlight timeout doesn't follow
-        // what was set (seen on the PH317-53), so it's never reported: the
-        // app shows the user's own choice instead and drift checks skip it.
-        let backlight = None;
+        let has = |t| self.caps.has_toggle(t);
+        let discrete = if has(Toggle::DiscreteGpu) {
+            self.call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_MODE as u32)).ok().and_then(p::decode_discrete_gpu)
+        } else {
+            None
+        };
         Toggles {
-            lcd_overdrive: profile.map(|(lcd, _)| lcd),
-            win_key: profile.map(|(_, win)| win),
-            boot_animation: boot,
-            backlight_timeout: backlight,
+            lcd_overdrive: profile.map(|(lcd, _)| lcd).filter(|_| has(Toggle::LcdOverdrive)),
+            win_key: profile.map(|(_, win)| win).filter(|_| has(Toggle::WinKey)),
+            boot_animation: boot.filter(|_| has(Toggle::BootAnimation)),
+            backlight_timeout: if has(Toggle::BacklightTimeout) { self.read_backlight() } else { None },
+            discrete_gpu: discrete,
         }
     }
 }
@@ -192,7 +309,7 @@ impl Backend for WmiBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities { lighting: true, fans: true, gpu_modes: true, sensors: true, toggles: true }
+        self.caps.clone()
     }
 
     fn sensors(&mut self) -> Sensors {
@@ -214,22 +331,25 @@ impl Backend for WmiBackend {
         self.set("SetGamingRgbKb", Input::U32(p::rgb_zone(zone, colour)))
     }
 
-    fn set_fan_mode(&mut self, fan: u64, mode: FanMode) -> Result<()> {
+    fn set_fan_mode(&mut self, fan: Fan, mode: FanMode) -> Result<()> {
         self.set("SetGamingFanBehavior", Input::U64(p::fan_behavior(fan, mode)))
     }
 
-    fn set_fan_speed(&mut self, fan: u64, percent: u8) -> Result<()> {
+    fn set_fan_speed(&mut self, fan: Fan, percent: u8) -> Result<()> {
         self.set("SetGamingFanSpeed", Input::U64(p::fan_speed(fan, percent)))
     }
 
     fn set_gpu(&mut self, mode: GpuMode) -> Result<()> {
-        // The firmware value tells the laptop which level is active; the
-        // actual clock offsets go through the NVIDIA driver.
-        self.set("SetGamingMiscSetting", Input::U64(p::gpu_oc(mode)))?;
-        let (core, mem) = p::gpu_offsets(mode);
+        let (index, level) = self.caps.gpu_level(mode).ok_or_else(|| anyhow!("this GPU has no {mode:?} level"))?;
+        // The firmware value tells the laptop which level is active (on the
+        // families where PredatorSense sends it); the actual clock offsets
+        // go through the NVIDIA driver.
+        if self.gpu_to_firmware() {
+            self.set("SetGamingMiscSetting", Input::U64(p::gpu_oc(index)))?;
+        }
         match &self.nvapi {
-            Ok(nv) => nv.set_offsets(core, mem),
-            Err(e) if mode == GpuMode::Normal => {
+            Ok(nv) => nv.set_offsets(level.core_mhz, level.memory_mhz),
+            Err(e) if level.core_mhz == 0 && level.memory_mhz == 0 => {
                 log::info!("NVIDIA driver interface unavailable ({e}); nothing to reset");
                 Ok(())
             }
@@ -247,11 +367,28 @@ impl Backend for WmiBackend {
             Toggle::LcdOverdrive => self.set("SetGamingProfile", Input::U64(p::lcd_overdrive(on))),
             Toggle::WinKey => self.set("SetGamingProfile", Input::U64(p::win_key(on))),
             Toggle::BootAnimation => self.set("SetGamingMiscSetting", Input::U64(p::boot_animation(on))),
+            Toggle::DiscreteGpu => self.set("SetGamingMiscSetting", Input::U64(p::discrete_gpu(on))),
             Toggle::BacklightTimeout => {
                 let c = self.apge.as_ref().ok_or_else(|| anyhow!("backlight timeout not supported"))?;
-                let out = self.call_on(c, "SetFunction", Input::U64(p::backlight_timeout(on)))?;
+                let read = |me: &Self| -> Result<u64> {
+                    let v = me.call_on(c, "GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET))?;
+                    if v & 0xFF != 0 {
+                        bail!("GetFunction returned status 0x{:X}", v & 0xFF);
+                    }
+                    Ok(v)
+                };
+                let current = read(self)?;
+                // The firmware flips this setting on every accepted call, so
+                // only send when it actually differs.
+                if p::decode_backlight_timeout(current) == Some(on) {
+                    return Ok(());
+                }
+                let out = self.call_on(c, "SetFunction", Input::U64(p::backlight_timeout(current, on)))?;
                 if out & 0xFF != 0 {
                     bail!("SetFunction returned status 0x{:X}", out & 0xFF);
+                }
+                if p::decode_backlight_timeout(read(self)?) != Some(on) {
+                    bail!("keyboard backlight timeout didn't change");
                 }
                 Ok(())
             }
@@ -267,11 +404,18 @@ impl Backend for WmiBackend {
                 None => ok = false,
             }
         }
-        let fans = self
-            .call("GetGamingFanBehavior", Input::U32((p::FAN_CPU | p::FAN_GPU) as u32))
-            .map(p::decode_fan_behavior)
-            .unwrap_or((None, None));
-        let gpu = self.call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_OC as u32)).ok().and_then(p::decode_gpu_oc);
+        let fans = match self.call("GetGamingFanBehavior", Input::U32(p::fan_query(&self.caps.fans))) {
+            Ok(out) => self.caps.fans.iter().filter_map(|&f| p::decode_fan_behavior(out, f).map(|m| (f, m))).collect(),
+            Err(_) => Vec::new(),
+        };
+        let gpu = if self.gpu_to_firmware() {
+            self.call("GetGamingMiscSetting", Input::U32(p::MISC_GPU_OC as u32))
+                .ok()
+                .and_then(p::decode_gpu_oc)
+                .and_then(|i| self.caps.gpu_levels.get(i).map(|l| l.mode))
+        } else {
+            None
+        };
         let gpu_core_offset = self.nvapi.as_ref().ok().and_then(|nv| nv.offset(super::nvapi::CLOCK_GRAPHICS).ok());
         let toggles = self.read_toggles();
         Observed { zones: ok.then_some(zones), fans, gpu, gpu_core_offset, toggles }
