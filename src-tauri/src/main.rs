@@ -68,9 +68,52 @@ fn install_service(app: tauri::AppHandle) -> Result<(), String> {
     }
 }
 
+/// Windows Sticky Keys belong to the signed-in user, not the hardware, so
+/// the app sets them itself instead of going through the service.
+#[tauri::command]
+fn get_sticky_keys() -> Option<bool> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::Accessibility::{SKF_STICKYKEYSON, STICKYKEYS};
+        use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_GETSTICKYKEYS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS};
+        let mut sk = STICKYKEYS { cbSize: std::mem::size_of::<STICKYKEYS>() as u32, ..Default::default() };
+        SystemParametersInfoW(SPI_GETSTICKYKEYS, sk.cbSize, Some(&mut sk as *mut _ as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0)).ok()?;
+        Some(sk.dwFlags.0 & SKF_STICKYKEYSON.0 != 0)
+    }
+    #[cfg(not(windows))]
+    None
+}
+
+#[tauri::command]
+fn set_sticky_keys(on: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::Accessibility::{SKF_STICKYKEYSON, STICKYKEYS, STICKYKEYS_FLAGS};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_GETSTICKYKEYS, SPI_SETSTICKYKEYS,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+        };
+        let mut sk = STICKYKEYS { cbSize: std::mem::size_of::<STICKYKEYS>() as u32, ..Default::default() };
+        SystemParametersInfoW(SPI_GETSTICKYKEYS, sk.cbSize, Some(&mut sk as *mut _ as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
+            .map_err(|e| e.to_string())?;
+        sk.dwFlags = if on {
+            STICKYKEYS_FLAGS(sk.dwFlags.0 | SKF_STICKYKEYSON.0)
+        } else {
+            STICKYKEYS_FLAGS(sk.dwFlags.0 & !SKF_STICKYKEYSON.0)
+        };
+        SystemParametersInfoW(SPI_SETSTICKYKEYS, sk.cbSize, Some(&mut sk as *mut _ as *mut _), SPIF_UPDATEINIFILE | SPIF_SENDCHANGE)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = on;
+        Err("Sticky Keys is a Windows setting".into())
+    }
+}
+
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, install_service])
+        .invoke_handler(tauri::generate_handler![get_state, set_settings, reapply, install_service, get_sticky_keys, set_sticky_keys])
         .run(tauri::generate_context!())
         .expect("error while running the app");
 }

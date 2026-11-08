@@ -13,3 +13,6 @@ tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_UI_Accessibility", "Win32_UI_WindowsAndMessaging"] }
