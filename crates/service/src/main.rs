@@ -182,6 +182,11 @@ mod platform {
     use std::process::Command;
 
     const UNIT: &str = "/etc/systemd/system/opensenses.service";
+    /// Where the service keeps its own copy when it isn't installed by a
+    /// package: an AppImage runs from a temporary mount that disappears
+    /// when the app closes, and /usr is read-only on Bazzite and other
+    /// image-based distros, while /usr/local is writable on all of them.
+    const COPY: &str = "/usr/local/lib/opensenses/opensenses-service";
 
     pub fn run_as_service() -> Result<()> {
         let (_keep, stop) = std::sync::mpsc::channel();
@@ -190,7 +195,17 @@ mod platform {
     }
 
     pub fn install() -> Result<()> {
-        let exe = std::env::current_exe()?;
+        let mut exe = std::env::current_exe()?;
+        let packaged = exe.starts_with("/usr/bin") || exe.starts_with("/usr/lib");
+        if !packaged {
+            let dest = std::path::Path::new(COPY);
+            std::fs::create_dir_all(dest.parent().unwrap()).context("run this with sudo")?;
+            // Replace rather than overwrite, so a running copy isn't disturbed.
+            let tmp = dest.with_extension("new");
+            std::fs::copy(&exe, &tmp).context("copying the service")?;
+            std::fs::rename(&tmp, dest)?;
+            exe = dest.to_path_buf();
+        }
         let unit = format!(
             "[Unit]\nDescription=OpenSenses hardware service\nAfter=multi-user.target\n\n\
              [Service]\nExecStart={} run\nRestart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n",
@@ -206,6 +221,7 @@ mod platform {
     pub fn uninstall() -> Result<()> {
         let _ = Command::new("systemctl").args(["disable", "--now", "opensenses.service"]).status();
         let _ = std::fs::remove_file(UNIT);
+        let _ = std::fs::remove_dir_all(std::path::Path::new(COPY).parent().unwrap());
         Command::new("systemctl").args(["daemon-reload"]).status()?;
         println!("service removed");
         Ok(())
