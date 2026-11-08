@@ -54,9 +54,13 @@ Please read this before installing.
 - **For problems with your laptop, contact Acer.** Don't contact Acer about
   OpenSenses, and don't expect them to support it.
 
-If something goes wrong, uninstall OpenSenses; that stops it from changing
-anything. Some settings it already changed are stored in the laptop's firmware
-and stay until you change them back.
+**If something goes wrong:** OpenSenses saves your laptop's settings before
+it changes anything. **Settings → Restore original settings** puts them all
+back (lighting, fans, GPU overclock and the on/off settings), and OpenSenses
+then leaves the laptop alone until you change something again. Uninstalling
+OpenSenses restores them automatically too. If OpenSenses had already been
+used on the laptop before it kept this copy, it restores Acer's factory
+settings for the model instead.
 
 ## What it does
 
