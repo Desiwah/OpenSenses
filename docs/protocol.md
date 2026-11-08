@@ -127,6 +127,13 @@ On the Triton 500, `SetGamingMiscSetting(0x2 | mode << 8)` switches between
 hybrid graphics (1) and the NVIDIA GPU only (2); it takes effect after a
 restart. Read with `GetGamingMiscSetting(2)`.
 
+**CoolBoost** (fans run harder in Auto mode) is also in `APGeAction`:
+`SetFunction(7 | on << 16)`, read with `GetFunction(0x207)`, where byte 1 is 1
+while it is on (`0x1010100` on, `0x1010000` off on the PH317-53). Sending the
+same value twice leaves it as it is. PredatorSense shows it on the fan page and
+only lets it be changed in Auto mode. On the PH317-53 it raised both fans by
+about 1000 RPM.
+
 Sticky Keys is a Windows accessibility setting of the signed-in user
 (`SystemParametersInfo` with `SPI_SETSTICKYKEYS`), so the app sets it
 directly; it doesn't involve the firmware.
