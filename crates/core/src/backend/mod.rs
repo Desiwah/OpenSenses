@@ -48,6 +48,10 @@ pub struct Capabilities {
     pub sticky_keys: bool,
     /// Features this model has that OpenSenses doesn't support yet.
     pub coming: Vec<String>,
+    /// Features not yet tested on this model's hardware: "lighting",
+    /// "fans", "gpu", "monitor", "games" and toggle keys ("cool_boost").
+    /// GameSync itself only depends on the OS, so it is only listed on Linux.
+    pub experimental: Vec<String>,
 }
 
 impl Capabilities {
@@ -57,6 +61,19 @@ impl Capabilities {
 
     pub fn gpu_level(&self, mode: GpuMode) -> Option<(usize, GpuLevel)> {
         self.gpu_levels.iter().copied().enumerate().find(|(_, l)| l.mode == mode)
+    }
+
+    /// Marks every feature this laptop shows as experimental.
+    pub fn all_experimental(mut self) -> Self {
+        let mut v: Vec<String> = ["lighting", "fans", "gpu", "monitor"].iter().map(|s| s.to_string()).collect();
+        v.extend(self.toggles.iter().map(|t| t.key().to_string()));
+        self.experimental = v;
+        self
+    }
+
+    pub fn with_experimental(mut self, key: &str) -> Self {
+        self.experimental.push(key.to_string());
+        self
     }
 }
 

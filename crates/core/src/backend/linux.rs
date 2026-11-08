@@ -84,7 +84,11 @@ impl Backend for LinuxBackend {
             toggles: Vec::new(),
             sticky_keys: false,
             coming: model.map(super::coming_features).unwrap_or_default(),
+            experimental: Vec::new(),
         }
+        // The Linux side hasn't been tried on real hardware yet.
+        .all_experimental()
+        .with_experimental("games")
     }
 
     fn sensors(&mut self) -> Sensors {

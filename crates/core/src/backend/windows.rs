@@ -220,7 +220,7 @@ impl WmiBackend {
         };
 
         if let Some(m) = self.model {
-            return Capabilities {
+            let caps = Capabilities {
                 product,
                 model_name: Some(m.name.to_string()),
                 known_model: true,
@@ -229,10 +229,28 @@ impl WmiBackend {
                 fans: m.fans.to_vec(),
                 gpu_levels: levels(m.gpu_levels),
                 sensors: true,
-                toggles: m.toggles.iter().copied().filter(|t| *t != Toggle::BacklightTimeout || self.apge.is_some()).collect(),
+                // PredatorSense showed CoolBoost on every one of these models'
+                // fan pages; both it and the backlight timeout need APGeAction.
+                toggles: m
+                    .toggles
+                    .iter()
+                    .copied()
+                    .chain((!m.fans.is_empty()).then_some(Toggle::CoolBoost))
+                    .filter(|t| !matches!(t, Toggle::BacklightTimeout | Toggle::CoolBoost) || self.apge.is_some())
+                    .collect(),
                 sticky_keys: true,
                 coming: super::coming_features(m),
+                experimental: Vec::new(),
             };
+            if m.product != models::TESTED_PRODUCT {
+                return caps.all_experimental();
+            }
+            // Same laptop, different GPU: its overclock numbers are untested.
+            let mut caps = caps;
+            if gpu_ids != Some(models::TESTED_GPU) {
+                caps.experimental.push("gpu".into());
+            }
+            return caps;
         }
 
         // Unknown model: keep only what the firmware answers to.
@@ -245,6 +263,9 @@ impl WmiBackend {
         let mut toggles = Vec::new();
         if self.read_backlight().is_some() {
             toggles.push(Toggle::BacklightTimeout);
+        }
+        if !fans.is_empty() && self.read_cool_boost().is_some() {
+            toggles.push(Toggle::CoolBoost);
         }
         if self.call("GetGamingProfile", Input::U32(0)).ok().and_then(p::decode_profile).is_some() {
             toggles.extend([Toggle::LcdOverdrive, Toggle::WinKey]);
@@ -270,7 +291,9 @@ impl WmiBackend {
             toggles,
             sticky_keys: true,
             coming: Vec::new(),
+            experimental: Vec::new(),
         }
+        .all_experimental()
     }
 
     fn read_backlight(&self) -> Option<bool> {
@@ -278,6 +301,13 @@ impl WmiBackend {
             .as_ref()
             .and_then(|c| self.call_on(c, "GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET)).ok())
             .and_then(p::decode_backlight_timeout)
+    }
+
+    fn read_cool_boost(&self) -> Option<bool> {
+        self.apge
+            .as_ref()
+            .and_then(|c| self.call_on(c, "GetFunction", Input::U32(p::COOL_BOOST_GET)).ok())
+            .and_then(p::decode_cool_boost)
     }
 
     fn gpu_to_firmware(&self) -> bool {
@@ -299,6 +329,7 @@ impl WmiBackend {
             boot_animation: boot.filter(|_| has(Toggle::BootAnimation)),
             backlight_timeout: if has(Toggle::BacklightTimeout) { self.read_backlight() } else { None },
             discrete_gpu: discrete,
+            cool_boost: if has(Toggle::CoolBoost) { self.read_cool_boost() } else { None },
         }
     }
 }
@@ -368,6 +399,14 @@ impl Backend for WmiBackend {
             Toggle::WinKey => self.set("SetGamingProfile", Input::U64(p::win_key(on))),
             Toggle::BootAnimation => self.set("SetGamingMiscSetting", Input::U64(p::boot_animation(on))),
             Toggle::DiscreteGpu => self.set("SetGamingMiscSetting", Input::U64(p::discrete_gpu(on))),
+            Toggle::CoolBoost => {
+                let c = self.apge.as_ref().ok_or_else(|| anyhow!("CoolBoost not supported"))?;
+                let out = self.call_on(c, "SetFunction", Input::U64(p::cool_boost(on)))?;
+                if out & 0xFF != 0 {
+                    bail!("SetFunction returned status 0x{:X}", out & 0xFF);
+                }
+                Ok(())
+            }
             Toggle::BacklightTimeout => {
                 let c = self.apge.as_ref().ok_or_else(|| anyhow!("backlight timeout not supported"))?;
                 let read = |me: &Self| -> Result<u64> {
@@ -429,7 +468,7 @@ impl Backend for WmiBackend {
         out.push(format!("GetGamingLED(1) = {}", raw(self.call("GetGamingLED", Input::U32(1)))));
         if let Some(c) = self.apge.as_ref() {
             out.push(format!("APGeAction.GetFunction(0x88401) = {}", raw(self.call_on(c, "GetFunction", Input::U32(p::BACKLIGHT_TIMEOUT_GET)))));
-            out.push(format!("APGeAction.GetFunction(0xFFFF8401) = {}", raw(self.call_on(c, "GetFunction", Input::U32(0xFFFF_8401)))));
+            out.push(format!("APGeAction.GetFunction(0x207) = {}", raw(self.call_on(c, "GetFunction", Input::U32(p::COOL_BOOST_GET)))));
         }
         out
     }
