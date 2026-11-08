@@ -5,6 +5,7 @@
 //! unsupported instead of guessed.
 
 use super::{Backend, Capabilities, Observed, Sensors};
+use crate::settings::Fan;
 use crate::settings::{FanMode, GpuMode, Rgb, Toggle};
 use anyhow::{bail, Context, Result};
 use std::fs;
@@ -17,6 +18,11 @@ const STATIC_DEV: &str = "/dev/acer-gkbbl-static-0";
 pub struct LinuxBackend {
     hwmon_acer: Option<PathBuf>,
     hwmon_cpu: Option<PathBuf>,
+    product: String,
+}
+
+fn dmi(field: &str) -> String {
+    fs::read_to_string(format!("/sys/class/dmi/id/{field}")).map(|s| s.trim().to_string()).unwrap_or_default()
 }
 
 fn hwmon_named(names: &[&str]) -> Option<PathBuf> {
@@ -47,7 +53,11 @@ fn write_dev(dev: &str, bytes: &[u8]) -> Result<()> {
 
 impl LinuxBackend {
     pub fn open() -> Result<Self> {
-        Ok(Self { hwmon_acer: hwmon_named(&["acer"]), hwmon_cpu: hwmon_named(&["coretemp", "k10temp"]) })
+        Ok(Self {
+            hwmon_acer: hwmon_named(&["acer"]),
+            hwmon_cpu: hwmon_named(&["coretemp", "k10temp"]),
+            product: dmi("product_name"),
+        })
     }
 
     fn acer(&self, file: &str) -> Option<u32> {
@@ -61,12 +71,19 @@ impl Backend for LinuxBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
+        let model = crate::models::lookup(&self.product);
         Capabilities {
+            product: self.product.clone(),
+            model_name: model.map(|m| m.name.to_string()).or_else(|| Some(dmi("product_family")).filter(|s| !s.is_empty())),
+            known_model: model.is_some(),
             lighting: Path::new(DYNAMIC_DEV).exists() && Path::new(STATIC_DEV).exists(),
-            fans: false,
-            gpu_modes: false,
+            per_key: false,
+            fans: Vec::new(),
+            gpu_levels: Vec::new(),
             sensors: self.hwmon_acer.is_some() || self.hwmon_cpu.is_some(),
-            toggles: false,
+            toggles: Vec::new(),
+            sticky_keys: false,
+            coming: model.map(super::coming_features).unwrap_or_default(),
         }
     }
 
@@ -92,11 +109,11 @@ impl Backend for LinuxBackend {
         write_dev(STATIC_DEV, &[crate::protocol::zone_mask(zone) as u8, c.r, c.g, c.b])
     }
 
-    fn set_fan_mode(&mut self, _fan: u64, _mode: FanMode) -> Result<()> {
+    fn set_fan_mode(&mut self, _fan: Fan, _mode: FanMode) -> Result<()> {
         bail!("fan control is not available on Linux yet")
     }
 
-    fn set_fan_speed(&mut self, _fan: u64, _percent: u8) -> Result<()> {
+    fn set_fan_speed(&mut self, _fan: Fan, _percent: u8) -> Result<()> {
         bail!("fan control is not available on Linux yet")
     }
 
