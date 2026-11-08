@@ -25,6 +25,7 @@
       <p class="banner" id="gameBanner" role="status" hidden></p>
       <!-- Lighting -->
       <section class="page" id="page-lighting">
+        <h1 class="exp-title" id="lightingExp" hidden>Lighting (experimental)</h1>
         <div class="note" id="perKeyNote" hidden>
           <h2>Per-key keyboard</h2>
           <p>This laptop has a per-key RGB keyboard, which has its own controller. Support for it is planned for a later update.</p>
@@ -85,10 +86,11 @@
       <!-- Fans -->
       <section class="page" id="page-fans" hidden>
         <header class="page-head">
-          <h1>Fans</h1>
+          <h1 data-title="fans">Fans</h1>
           <p>Auto lets the laptop decide. Max runs both fans flat out. Custom holds each fan at the speed you set.</p>
         </header>
         <div class="seg big" id="fanModes" role="radiogroup" aria-label="Fan mode"></div>
+        <div class="toggles cool-boost" id="coolBoostRow"></div>
         <div class="fans" id="fanCards"></div>
         <p class="hint" id="guardNote" hidden>Fans were switched to Max because the laptop got too hot. Your custom speeds come back once both chips are below 80 °C.</p>
       </section>
@@ -96,7 +98,7 @@
       <!-- GPU -->
       <section class="page" id="page-gpu" hidden>
         <header class="page-head">
-          <h1>GPU overclock</h1>
+          <h1 data-title="gpu">GPU overclock</h1>
           <p id="gpuIntro"></p>
         </header>
         <div class="levels" id="gpuLevels" role="radiogroup" aria-label="GPU level"></div>
@@ -105,7 +107,7 @@
       <!-- Monitor -->
       <section class="page" id="page-monitor" hidden>
         <header class="page-head">
-          <h1>Monitor</h1>
+          <h1 data-title="monitor">Monitor</h1>
           <p>Read straight from the laptop's firmware every two seconds.</p>
         </header>
         <div class="gauges" id="gauges"></div>
@@ -113,7 +115,7 @@
       <!-- Games -->
       <section class="page" id="page-games" hidden>
         <header class="page-head">
-          <h1>Games</h1>
+          <h1 data-title="games">Games</h1>
           <p>GameSync switches to a game's own settings while it runs and back to your everyday ones when it closes. The background service watches for the games, so this app doesn't have to be open.</p>
         </header>
         <div class="toggles" id="gameSyncRow"></div>
@@ -142,6 +144,7 @@
         <div class="about">
           <p id="modelLine"></p>
           <p id="coming" hidden>Planned for this model: <span id="comingList"></span></p>
+          <p id="expNote" hidden>“(experimental)” marks features that follow PredatorSense's own data for this laptop but haven't been tested on one yet. They should work; if something doesn't, turning it back off undoes it.</p>
         </div>
       </section>
     </main>

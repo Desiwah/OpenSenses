@@ -192,7 +192,17 @@ input[type="range"] { width: 100%; accent-color: var(--focus); }
 .game { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-m); padding: 16px 20px; }
 .game[data-running="true"] { border-color: var(--focus); }
 .game-head { display: flex; align-items: center; gap: 14px; }
+.gicon { width: 40px; height: 40px; border-radius: 9px; flex: none; object-fit: contain; }
+.gicon.letter {
+  display: grid; place-items: center; font: 400 21px var(--display); color: #12162b;
+  background: hsl(var(--h), 70%, 72%);
+}
+.game-head .names { display: grid; line-height: 1.25; }
+.game-rows > span { display: flex; align-items: center; gap: 8px; }
+.game-rows > span svg { width: 18px; height: 18px; flex: none; color: var(--focus); }
 .game-head h3 { font: 400 20px var(--display); margin: 0; }
+.exp-title { font: 400 28px var(--display); margin: 0 0 14px; }
+.cool-boost { margin-top: 16px; }
 .game-head .exe { color: var(--muted); font-size: 13px; }
 .game-head .live { color: var(--focus); font-size: 13px; }
 .game-head .sw { margin-left: auto; }

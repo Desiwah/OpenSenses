@@ -14,16 +14,18 @@ function mockCaps() {
     product: `Predator ${q}`, model_name: "Predator Helios 300", known_model: true, lighting: true, per_key: false,
     fans: ["cpu", "gpu"], sensors: true, sticky_keys: true, coming: [],
     gpu_levels: [lv("normal", 0, 0), lv("faster", 100, 160), lv("turbo", 160, 320)],
-    toggles: ["backlight_timeout", "lcd_overdrive", "win_key", "boot_animation"],
+    toggles: ["backlight_timeout", "lcd_overdrive", "win_key", "boot_animation", "cool_boost"], experimental: [],
   };
+  const all = (t) => ["lighting", "fans", "gpu", "monitor", ...t];
   if (q === "PT515-51") Object.assign(base, { model_name: "Predator Triton 500", fans: ["cpu", "gpu", "gpu2"],
     gpu_levels: [lv("normal", 0, 120), lv("faster", 75, 200), lv("turbo", 100, 270)],
-    toggles: ["backlight_timeout", "lcd_overdrive", "discrete_gpu", "win_key", "boot_animation"] });
+    toggles: ["backlight_timeout", "lcd_overdrive", "discrete_gpu", "win_key", "boot_animation", "cool_boost"] });
   if (q === "PH717-71") Object.assign(base, { model_name: "Predator Helios 700", lighting: false, per_key: true,
     gpu_levels: [lv("normal", 0, 0), lv("faster", 60, 133), lv("boosted", 60, 266), lv("turbo", 100, 400)],
-    toggles: ["boot_animation"], coming: ["Per-key keyboard lighting", "CPU overclocking", "Programmable hotkeys"] });
+    toggles: ["boot_animation", "cool_boost"], coming: ["Per-key keyboard lighting", "CPU overclocking", "Programmable hotkeys"] });
   if (q === "unknown") Object.assign(base, { product: "Nitro AN515-55", model_name: "Nitro 5", known_model: false,
     gpu_levels: [], toggles: ["backlight_timeout", "boot_animation"] });
+  if (q !== "PH317-53") base.experimental = all(base.toggles);
   return base;
 }
 function mockInvoke(cmd, args) {
@@ -39,9 +41,9 @@ function mockInvoke(cmd, args) {
       },
       sensors: {}, capabilities: mockCaps(),
       backend: "preview", errors: [], overheat_guard: false,
-      toggles_now: { lcd_overdrive: false, boot_animation: false, backlight_timeout: true, win_key: true, discrete_gpu: false },
+      toggles_now: { lcd_overdrive: false, boot_animation: false, backlight_timeout: true, win_key: true, discrete_gpu: false, cool_boost: false },
     };
-    mock.settings.toggles = { lcd_overdrive: null, boot_animation: null, backlight_timeout: null, win_key: null, discrete_gpu: null };
+    mock.settings.toggles = { lcd_overdrive: null, boot_animation: null, backlight_timeout: null, win_key: null, discrete_gpu: null, cool_boost: null };
     mock.settings.fans.gpu2_percent = 50;
     mock.settings.fahrenheit = false;
     mock.sticky = false;
@@ -53,7 +55,8 @@ function mockInvoke(cmd, args) {
     sys_temp: 49, cpu_fan_rpm: Math.round(3000 + 300 * Math.sin(t / 5)), gpu_fan_rpm: Math.round(3450 + 250 * Math.sin(t / 6)),
   };
   if (cmd === "get_sticky_keys") return Promise.resolve(mock.sticky);
-  if (cmd === "running_apps") return Promise.resolve(["discord.exe", "eldenring.exe", "steam.exe", "cyberpunk2077.exe"]);
+  if (cmd === "running_apps") return Promise.resolve(["discord.exe", "eldenring.exe", "steam.exe", "cyberpunk2077.exe"].map((name) => ({ name, path: `C:\\Games\\${name}` })));
+  if (cmd === "app_icon") return Promise.resolve(null);
   mock.active_game = location.search.includes("playing") ? "eldenring.exe" : null;
   if (cmd === "set_sticky_keys") { mock.sticky = args.on; return Promise.resolve(null); }
   if (cmd === "set_settings") {
@@ -92,6 +95,10 @@ const GPU_LEVEL_HINTS = { normal: "Stock clocks", faster: "A mild overclock", bo
 const FAN_NAMES = { cpu: "CPU fan", gpu: "GPU fan", gpu2: "Second GPU fan" };
 const mhz = (v) => `${v >= 0 ? "+" : ""}${v} MHz`;
 
+// Features not tested on this model's hardware get "(experimental)".
+const isExp = (key) => !!(state && state.capabilities && (state.capabilities.experimental || []).includes(key));
+const expTitle = (title, key) => (isExp(key) ? `${title} (experimental)` : title);
+
 const hex = (c) => "#" + [c.r, c.g, c.b].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
 const rgb = (h) => ({ r: parseInt(h.slice(1, 3), 16), g: parseInt(h.slice(3, 5), 16), b: parseInt(h.slice(5, 7), 16) });
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -124,9 +131,10 @@ async function refresh(first) {
       renderSettings();
     } else if (JSON.stringify(st.toggles_now) !== lastToggles) {
       renderSettings();
+      renderFans();
     }
     lastToggles = JSON.stringify(st.toggles_now);
-    if (st.active_game !== lastGame) { lastGame = st.active_game; renderGames(); }
+    if (st.active_game !== lastGame) { lastGame = st.active_game; renderGames(); if (lastGame) loadRunningApps(); }
   } catch (e) {
     $("noService").hidden = false;
     $("nsDetail").textContent = String(e);
@@ -493,7 +501,7 @@ function renderSettings() {
     // The backlight timeout can't be read back reliably; it's on from the factory.
     const fallback = key === "backlight_timeout" ? true : null;
     const value = chosen != null ? chosen : now[key] != null ? now[key] : fallback;
-    return switchRow(title, desc, value, false,
+    return switchRow(expTitle(title, key), desc, value, false,
       (on) => change((s) => { s.toggles = s.toggles || {}; s.toggles[key] = on; }));
   });
   if (caps.sticky_keys) rows.push(switchRow("Sticky Keys",
@@ -508,6 +516,7 @@ function renderSettings() {
   const coming = caps.coming || [];
   $("coming").hidden = coming.length === 0;
   $("comingList").textContent = coming.join(", ") + ".";
+  $("expNote").hidden = (caps.experimental || []).length === 0;
   $("modelLine").textContent = caps.product
     ? `${caps.model_name ? caps.model_name + ", " : ""}${caps.product}${caps.known_model ? "" : " (features found by testing what this laptop answers to)"}`
     : "";
@@ -523,6 +532,55 @@ const gameTitle = (exe) => {
   return base.charAt(0).toUpperCase() + base.slice(1);
 };
 const exeName = (text) => text.trim().split(/[\\/]/).pop().toLowerCase();
+let runningApps = [];        // [{ name, path }] from the last look at running programs
+const iconCache = new Map(); // program path -> data URL, or null when it has none
+
+// Small line icons for the profile rows.
+const ROW_ICONS = {
+  lighting: '<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>',
+  fans: '<circle cx="12" cy="12" r="2"/><path d="M12 10c-1-4 1-7 3-7s2 3-1 6M14 12c4-1 7 1 7 3s-3 2-6-1M12 14c1 4-1 7-3 7s-2-3 1-6M10 12c-4 1-7-1-7-3s3-2 6 1"/>',
+  gpu: '<rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
+  winkey: '<rect x="3" y="3" width="18" height="18" rx="3"/><rect x="7" y="7" width="10" height="9" rx="1.5"/>',
+};
+function rowIcon(name) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.7");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = ROW_ICONS[name];
+  return svg;
+}
+
+// The game's own icon when its program file is known, else its first letter.
+function gameIcon(g) {
+  const letter = document.createElement("span");
+  letter.className = "gicon letter";
+  letter.textContent = gameTitle(g.exe).charAt(0);
+  let h = 0;
+  for (const ch of g.exe) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  letter.style.setProperty("--h", h);
+  if (!g.path) return letter;
+  const show = (url) => {
+    if (!url) return;
+    const img = document.createElement("img");
+    img.className = "gicon";
+    img.alt = "";
+    img.src = url;
+    letter.replaceWith(img);
+  };
+  if (iconCache.has(g.path)) {
+    const url = iconCache.get(g.path);
+    if (url) { const img = document.createElement("img"); img.className = "gicon"; img.alt = ""; img.src = url; return img; }
+    return letter;
+  }
+  invoke("app_icon", { path: g.path }).then((url) => { iconCache.set(g.path, url || null); show(url); }).catch(() => iconCache.set(g.path, null));
+  return letter;
+}
 
 function option(value, label, selected) {
   const o = document.createElement("option");
@@ -560,7 +618,8 @@ function gameCard(g, i, caps) {
 
   const head = document.createElement("div");
   head.className = "game-head";
-  head.innerHTML = `<h3></h3><span class="exe"></span><span class="live"></span><label class="sw"><input type="checkbox" role="switch"><span></span></label>`;
+  head.innerHTML = `<span class="names"><h3></h3><span class="exe"></span></span><span class="live"></span><label class="sw"><input type="checkbox" role="switch"><span></span></label>`;
+  head.prepend(gameIcon(g));
   head.querySelector("h3").textContent = gameTitle(g.exe);
   head.querySelector(".exe").textContent = g.exe;
   head.querySelector(".live").textContent = running ? "Running, profile in use" : "";
@@ -576,8 +635,9 @@ function gameCard(g, i, caps) {
 
   const rows = document.createElement("div");
   rows.className = "game-rows";
-  const row = (label, ...content) => {
-    const l = document.createElement("span"); l.textContent = label;
+  const row = (label, icon, ...content) => {
+    const l = document.createElement("span");
+    l.append(rowIcon(icon), label);
     const d = document.createElement("div"); d.className = "detail"; d.append(...content);
     rows.append(l, d);
   };
@@ -593,7 +653,7 @@ function gameCard(g, i, caps) {
       take.onclick = () => { edit((p) => (p.lighting = clone(settings.lighting))); setStatus(`Lighting saved for ${gameTitle(g.exe)}`); };
       parts.push(take);
     }
-    row("Lighting", ...parts);
+    row("Lighting", "lighting", ...parts);
   }
 
   const fans = caps.fans || [];
@@ -622,18 +682,18 @@ function gameCard(g, i, caps) {
         box.appendChild(lab);
       }
     }
-    row("Fans", ...parts);
+    row("Fans", "fans", ...parts);
   }
 
   const levels = caps.gpu_levels || [];
   if (levels.length) {
-    row("GPU", choice([["keep", "Keep everyday level"], ...levels.map((l) => [l.mode, GPU_LEVEL_NAMES[l.mode] || l.mode])],
+    row("GPU", "gpu", choice([["keep", "Keep everyday level"], ...levels.map((l) => [l.mode, GPU_LEVEL_NAMES[l.mode] || l.mode])],
       g.gpu || "keep", (v) => edit((p) => (p.gpu = v === "keep" ? null : v)), "GPU level"));
   }
 
   if ((caps.toggles || []).includes("win_key")) {
     const cur = g.win_key == null ? "keep" : g.win_key ? "on" : "off";
-    row("Windows key", choice([["keep", "Keep everyday setting"], ["off", "Blocked while playing"], ["on", "Works while playing"]], cur,
+    row("Windows key", "winkey", choice([["keep", "Keep everyday setting"], ["off", "Blocked while playing"], ["on", "Works while playing"]], cur,
       (v) => edit((p) => (p.win_key = v === "keep" ? null : v === "on")), "Windows key"));
   }
 
@@ -666,18 +726,29 @@ function renderGameBanner() {
 }
 
 async function loadRunningApps() {
-  let apps = [];
-  try { apps = await invoke("running_apps"); } catch { apps = []; }
-  $("runningApps").replaceChildren(...apps.map((a) => option(a, gameTitle(a), false)));
+  try { runningApps = await invoke("running_apps"); } catch { runningApps = []; }
+  $("runningApps").replaceChildren(...runningApps.map((a) => option(a.name, gameTitle(a.name), false)));
+  // Games added by name pick up their program path (and so their icon)
+  // the first time they're seen running.
+  const found = (settings.games || []).filter((g) => !g.path && runningApps.some((a) => a.name === g.exe && a.path));
+  if (found.length) change((s) => {
+    for (const g of s.games) {
+      const a = runningApps.find((x) => x.name === g.exe && x.path);
+      if (!g.path && a) g.path = a.path;
+    }
+  });
 }
 
 function addGame() {
-  const exe = exeName($("gameExe").value);
+  const typed = $("gameExe").value.trim().replace(/^"(.*)"$/, "$1"); // Explorer's "Copy as path" adds quotes
+  const exe = exeName(typed);
   if (!exe) return;
+  const seen = runningApps.find((a) => a.name === exe && a.path);
+  const path = /[\\/]/.test(typed) ? typed : seen ? seen.path : null;
   if ((settings.games || []).some((g) => g.exe === exe)) { setStatus(`${exe} is already in the list`, true); return; }
   change((s) => {
     s.games = s.games || [];
-    s.games.push({ exe, enabled: true, lighting: null, fans: null, gpu: null, win_key: null });
+    s.games.push({ exe, path, enabled: true, lighting: null, fans: null, gpu: null, win_key: null });
   });
   $("gameExe").value = "";
   setStatus(`Added ${exe}. Pick what should change while it runs.`);
@@ -776,6 +847,20 @@ function renderFans() {
     return c;
   });
   $("fanCards").replaceChildren(...cards);
+
+  // CoolBoost sits with the fans, as in PredatorSense, and only acts in Auto.
+  const hasBoost = (caps.toggles || []).includes("cool_boost");
+  $("coolBoostRow").hidden = !hasBoost;
+  if (hasBoost) {
+    const chosen = settings.toggles ? settings.toggles.cool_boost : null;
+    const now = state && state.toggles_now ? state.toggles_now.cool_boost : null;
+    const auto = f.mode === "auto";
+    $("coolBoostRow").replaceChildren(switchRow(expTitle("CoolBoost", "cool_boost"),
+      auto ? "Runs the fans faster in Auto mode for extra cooling, at the cost of more noise."
+           : "Works in Auto mode only. Switch the fans to Auto to use it.",
+      chosen != null ? chosen : now, !auto,
+      (on) => change((s) => { s.toggles = s.toggles || {}; s.toggles.cool_boost = on; })));
+  }
 }
 
 function renderGpu() {
@@ -862,6 +947,9 @@ function renderSections() {
     document.querySelector(`.tab[data-page="${page}"]`).hidden = !visible;
   }
   $("perKeyNote").hidden = !(caps.per_key && !caps.lighting);
+  $("lightingExp").hidden = !(caps.lighting && isExp("lighting"));
+  const TITLES = { fans: "Fans", gpu: "GPU overclock", monitor: "Monitor", games: "Games" };
+  document.querySelectorAll("h1[data-title]").forEach((h) => (h.textContent = expTitle(TITLES[h.dataset.title], h.dataset.title)));
   document.querySelectorAll("#page-lighting .stage, #page-lighting .controls").forEach((el) => (el.hidden = !caps.lighting));
   const current = document.querySelector(".tab[aria-current=page]");
   if (current && current.hidden) {
