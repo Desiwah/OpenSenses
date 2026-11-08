@@ -3,7 +3,7 @@
 //! JSON message per line.
 
 use crate::backend::{Capabilities, Sensors};
-use crate::settings::Settings;
+use crate::settings::{Settings, Toggles};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
@@ -27,6 +27,8 @@ pub struct State {
     pub errors: Vec<String>,
     /// Set when the service had to force fans to Max because of heat.
     pub overheat_guard: bool,
+    /// What each toggle is actually set to on the laptop right now.
+    pub toggles_now: Toggles,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

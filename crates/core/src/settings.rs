@@ -92,12 +92,55 @@ impl Default for Fans {
     }
 }
 
+/// On/off settings PredatorSense showed for the PH317-53.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Toggle {
+    /// Faster pixel response on the built-in screen.
+    LcdOverdrive,
+    /// Logo animation and sound when the laptop starts.
+    BootAnimation,
+    /// Keyboard lighting goes dark after 30 seconds without typing.
+    BacklightTimeout,
+    /// Windows and Menu keys work (off blocks them, e.g. while gaming).
+    WinKey,
+}
+
+impl Toggle {
+    pub const ALL: [Toggle; 4] = [Toggle::LcdOverdrive, Toggle::BootAnimation, Toggle::BacklightTimeout, Toggle::WinKey];
+}
+
+/// `None` means "leave it as the laptop has it": nothing is changed until
+/// the user actually flips a toggle in the app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Toggles {
+    pub lcd_overdrive: Option<bool>,
+    pub boot_animation: Option<bool>,
+    pub backlight_timeout: Option<bool>,
+    pub win_key: Option<bool>,
+}
+
+impl Toggles {
+    pub fn get(&self, t: Toggle) -> Option<bool> {
+        match t {
+            Toggle::LcdOverdrive => self.lcd_overdrive,
+            Toggle::BootAnimation => self.boot_animation,
+            Toggle::BacklightTimeout => self.backlight_timeout,
+            Toggle::WinKey => self.win_key,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub lighting: Lighting,
     pub fans: Fans,
     pub gpu: GpuMode,
+    pub toggles: Toggles,
+    /// Show temperatures in Fahrenheit in the app.
+    pub fahrenheit: bool,
     /// Re-apply these settings at startup, after sleep and when something
     /// (e.g. a Windows update) resets them.
     pub keep_applied: bool,
@@ -105,7 +148,14 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { lighting: Lighting::default(), fans: Fans::default(), gpu: GpuMode::Normal, keep_applied: true }
+        Self {
+            lighting: Lighting::default(),
+            fans: Fans::default(),
+            gpu: GpuMode::Normal,
+            toggles: Toggles::default(),
+            fahrenheit: false,
+            keep_applied: true,
+        }
     }
 }
 
