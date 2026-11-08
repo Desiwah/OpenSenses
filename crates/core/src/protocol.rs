@@ -245,6 +245,23 @@ pub fn backlight_timeout(current: u64, on: bool) -> u64 {
     0x88402 | (current & 0xFF_0000_0000) | if on { 30u64 << 40 } else { 0 }
 }
 
+/// CoolBoost (fans run harder in Auto mode) through `APGeAction`:
+/// `SetFunction(7 | on << 16)`, read with `GetFunction(0x207)`, where byte 1
+/// is 1 while it is on. Unlike the backlight timeout, sending the same value
+/// twice leaves it as it is. Tested on a PH317-53 (about +1000 RPM per fan).
+pub const COOL_BOOST_GET: u32 = 0x207;
+
+pub fn cool_boost(on: bool) -> u64 {
+    7 | (on as u64) << 16
+}
+
+pub fn decode_cool_boost(out: u64) -> Option<bool> {
+    if out & 0xFF != 0 {
+        return None;
+    }
+    Some((out >> 8) & 0xFF == 1)
+}
+
 /// `SetGamingLED` values for the turbo LED.
 pub const TURBO_LED_ON: u64 = 0x10001;
 pub const TURBO_LED_OFF: u64 = 0x1;
@@ -312,6 +329,9 @@ mod tests {
         assert_eq!(backlight_timeout(0x1E0000080000, false), 0x88402);
         assert_eq!(boot_animation(true), 0x106);
         assert_eq!(decode_misc_flag(0x0), Some(false));
+        assert_eq!(decode_cool_boost(0x1010000), Some(false));
+        assert_eq!(decode_cool_boost(0x1010100), Some(true));
+        assert_eq!((cool_boost(true), cool_boost(false)), (0x10007, 0x7));
     }
 
     #[test]
