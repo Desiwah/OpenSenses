@@ -173,3 +173,110 @@ about 1000 RPM.
 Sticky Keys is a Windows accessibility setting of the signed-in user
 (`SystemParametersInfo` with `SPI_SETSTICKYKEYS`), so the app sets it
 directly; it doesn't involve the firmware.
+
+## CPU level and fan curve
+
+On the models whose `Feature.ini` has `[OverclockDetial] CPUOCWMIRule=1`
+(PH315-52, PH317-53, PT315-51, PH717-71, PT917-71) PredatorSense also sends a
+CPU level with every overclock change: `SetGamingMiscSetting(0x07 | level << 8)`.
+Like PredatorSense, OpenSenses raises it only on the charger with the battery
+at 40% or more. The level follows the GPU level, except on the Helios 700 and
+Triton 900 with an unlocked HK processor, which have their own CPU levels.
+The PH317-53's BIOS answers status 2 (not supported); OpenSenses then stops
+sending it.
+
+PredatorSense's service then picks the firmware fan curve:
+`curve = max(CPU level, GPU level) + 1`. It reads `GetGamingFanTable(0)`
+(bits 8–15 hold the curve) and sends `SetGamingFanTable(curve)` only when it
+differs. On the PH317-53 the curve follows the GPU level: Normal 1, Faster 2,
+Turbo 3.
+
+PredatorSense's CPU overclocking and power limits for the HK processors also
+apply Intel XTU profiles (raw CPU ratio, voltage and power settings). That
+part is left out: it writes processor registers directly and could make a
+laptop unstable.
+
+## Keys
+
+The firmware reports keys through the `APGeEvent` WMI event (GUID
+`676AA15E-6A47-4D9F-A2CC-1E6D18D14026`), whose `EventDetail` is 8 bytes:
+
+| Bytes | Meaning |
+| ----- | ------- |
+| `07 04 …` | Turbo key (seen on the PH317-53 as `07 04 01 00 00 00 00 00`) |
+| `07 01 g …` | Programmable keys switched to group `g` (1–3) |
+| `07 02 k …` | Programmable key `k` pressed; the current group is bits 32–39 of `GetGamingProfile(0)` |
+| `01 84 s …` | Keyboard backlight dimmed or woke (bit 3 of `s`) |
+
+On Windows the service subscribes to `SELECT * FROM APGeEvent` in `root\WMI`.
+On Linux the driver receives the event alongside `acer-wmi` (kernel 6.12 and
+later, where the WMI core calls both) and hands it to the service through
+`read()` on `/dev/opensenses`.
+
+The Turbo key does what PredatorSense does on these models: only on the
+charger, it switches to the highest GPU level and runs every fan on Max, and
+lights the turbo LED; pressing it again goes back. In OpenSenses it can also
+be set to change only the GPU level or only the fans, or nothing.
+
+The PredatorSense key (Helios 500, Helios 700, Triton 900) is a keyboard
+scan code, `E0 75`, or HID usage page `0x88` report `[_, 0x81, 0xFF]` on some
+keyboards. Windows only shows it to programs on the signed-in user's desktop,
+so the service starts a small agent there (`opensenses-service agent`) that
+listens with Raw Input and opens OpenSenses. On Linux it arrives as
+`KEY_PRESENTATION`, which the service reads from the keyboard's input device.
+
+Actions that belong to the user (opening a program, typing a macro, Sticky
+Keys) never run as SYSTEM or root: the service starts
+`opensenses-service user-action …` in the user's session, as that user
+(`CreateProcessAsUser` on Windows, `systemd-run --user` on Linux). The one
+exception is typing a macro on Linux, which needs a virtual keyboard
+(`/dev/uinput`) that only root can create; the service presses only the keys
+the macro lists.
+
+## Per-key keyboards (Helios 700, Triton 900)
+
+These keyboards have their own USB controller, vendor `0x0D62` (Darfon). Its
+interface is the one with an 8-byte feature report and no report id. Its
+product id gives the layout (`0xFABC`, `0x0ABA`, `0x6A0C`, `0x9A1A`, `0x6666`
+US; `0xFABE`, `0x0ABB`, `0x6A0D`, `0x9A1B` UK; `0x0ABC`, `0x0ABD` other ISO
+layouts).
+
+Each command is 8 bytes sent as feature report 0. The last byte is
+`0xFF − (sum of the other seven)`:
+
+| Command | Bytes |
+| ------- | ----- |
+| Start a colour frame | `12 00 00 08 00 00 00 E5`, then the frame, then the "custom" mode below |
+| Colour frame | 512 bytes in 8 output reports of 64: 128 LED slots of `00 R G B` |
+| Custom (per-key) mode | `08 02 33 05 BB 08 01 CK` (`BB` brightness 0–0x32) |
+| Brightness of the custom mode | `08 02 00 00 00 00 00 F5`, `08 00 33 05 BB 01 01 CK` |
+| Built-in effect | `08 02 00 00 00 00 00 F5`, `14 00 00 R G B 00 CK`, `08 00 EE SS BB CC DD CK` |
+| Lighting off | `08 01 00 00 00 00 00 F6` |
+| Windows and Menu keys | `03 00 …` work, `03 03 …` locked |
+| Backlight off after 30 s | `30 01 TT 00 00 00 00 CK` (`TT` 1 on, 0 off) |
+| Read brightness / timeout | `88 …` (brightness in byte 4) / `B0 …` (timeout in byte 2) |
+
+Effects (`EE`): Breathing 2, Wave 3, Press to light 4, Marquee 5, Ripple 6,
+Neon 8, Colourful marquee 9 (sent with `CC` = 8, the others with 1), Rain drop
+0x0A, Circle marquee 0x0B, Hedge 0x0C, Rotate 0x0D, Shifting 0x14, Zoom 0x15.
+Speed `SS` is 10 − the app's 1–9. Direction `DD`: Wave 1 right, 2 left, 3 up,
+4 down; Rotate 1 clockwise, 2 anticlockwise; others 0. PredatorSense's five
+brightness steps are 0x00, 0x0C, 0x19, 0x25 and 0x32.
+
+The LED slot of each key is column × 6 + row (row 0 is the bottom row), as
+in the layout files PredatorSense ships for these models; long keys light
+several slots (in `crates/core/src/perkey.rs`).
+
+The controller has other commands that change how the keyboard works (key
+remapping and the Helios 700's analog MagForce keys: `31`, `32`, `35`, `B4`
+and `30 01 xx 01`). OpenSenses never sends those, or any command not in the
+table above.
+
+The lights besides the keyboard go through the firmware:
+`SetGamingLEDBehavior` and `SetGamingLEDColor(group | R << 8 | G << 16 | B << 24)`.
+
+| Light | On/off | Colour group |
+| ----- | ------ | ------------ |
+| Helios 700 heat pipe | `0x40 \| on << 28 \| 1 << 29` | 7 |
+| Triton 900 fan window | `0x20 \| on << 26` | 6 |
+| Touchpad | `0x80 \| on << 30` | 8 (Triton 900) |
