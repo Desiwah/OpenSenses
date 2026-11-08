@@ -67,6 +67,12 @@ jobs:
       - name: Test
         run: cargo test -p pcore
 
+      - name: Build kernel driver
+        run: |
+          sudo apt-get install -y linux-headers-$(uname -r)
+          make -C driver KDIR=/lib/modules/$(uname -r)/build
+          make -C driver KDIR=/lib/modules/$(uname -r)/build clean
+
       - name: Build service
         run: |
           cargo build --release -p opensenses-service
