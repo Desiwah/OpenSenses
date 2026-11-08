@@ -65,7 +65,7 @@ impl Daemon {
         if old.map(|o| o.fans != self.settings.fans).unwrap_or(true) {
             self.guard = false;
         }
-        if old.map(|o| o.toggles != self.settings.toggles).unwrap_or(true) && hw.capabilities().toggles {
+        if old.map(|o| o.toggles != self.settings.toggles).unwrap_or(true) && !hw.capabilities().toggles.is_empty() {
             self.toggles_now = hw.observe().toggles;
         }
         for e in &self.errors {
@@ -109,13 +109,15 @@ impl Daemon {
         }
 
         // Overheat guard for Custom fan speeds.
-        if self.settings.fans.mode == FanMode::Custom && hw.capabilities().fans {
+        let fans = hw.capabilities().fans;
+        if self.settings.fans.mode == FanMode::Custom && !fans.is_empty() {
             let cpu = self.sensors.cpu_temp.unwrap_or(0);
             let gpu = self.sensors.gpu_temp.unwrap_or(0);
             if !self.guard && (cpu >= GUARD_CPU_C || gpu >= GUARD_GPU_C) {
                 log::warn!("overheat guard on (CPU {cpu} C, GPU {gpu} C): fans to Max");
-                let _ = hw.set_fan_mode(pcore::protocol::FAN_CPU, FanMode::Max);
-                let _ = hw.set_fan_mode(pcore::protocol::FAN_GPU, FanMode::Max);
+                for fan in fans {
+                    let _ = hw.set_fan_mode(fan, FanMode::Max);
+                }
                 self.guard = true;
             } else if self.guard && cpu < GUARD_RELEASE_C && gpu < GUARD_RELEASE_C {
                 log::info!("overheat guard off: back to custom fan speeds");
@@ -131,7 +133,8 @@ impl Daemon {
         let Some(hw) = self.hw.as_mut() else { return };
         let seen = hw.observe();
         self.toggles_now = seen.toggles;
-        if pcore::drifted(&self.settings, &seen) {
+        let want_core = hw.capabilities().gpu_level(self.settings.gpu).map(|(_, l)| l.core_mhz);
+        if pcore::drifted(&self.settings, &seen, want_core) {
             log::info!("hardware state changed behind our back ({seen:?}), re-applying");
             self.apply();
         }
@@ -148,9 +151,9 @@ fn adopt_current(hw: &mut Option<Box<dyn Backend>>) -> Settings {
         s.lighting.zone_on = z.map(|c| c != Rgb::default());
         s.lighting.zones = z.map(|c| if c == Rgb::default() { s.lighting.colour } else { c });
     }
-    if let (Some(cpu), Some(gpu)) = seen.fans {
-        if cpu == gpu {
-            s.fans.mode = cpu;
+    if let Some(&(_, first)) = seen.fans.first() {
+        if seen.fans.iter().all(|&(_, m)| m == first) {
+            s.fans.mode = first;
         }
     }
     if let Some(g) = seen.gpu {
@@ -189,7 +192,7 @@ pub fn run(jobs: Receiver<Job>) {
         toggles_now: Default::default(),
     };
     if let Some(hw) = d.hw.as_mut() {
-        if hw.capabilities().toggles {
+        if !hw.capabilities().toggles.is_empty() {
             d.toggles_now = hw.observe().toggles;
         }
     }
