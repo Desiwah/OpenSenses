@@ -42,7 +42,7 @@ Give a game its own lighting, fan mode, GPU level and Windows key setting. They 
 A small background service applies your settings at startup and after sleep, and puts them back if a Windows update or anything else changes them. The app doesn't need to be open.
 
 ↩️ **Restore anytime**  
-OpenSenses saves your laptop's settings before it changes anything and can put them all back with one button. Uninstalling it does this automatically.
+OpenSenses saves your laptop's settings before it changes anything and can put them back with one button. Uninstalling it does this automatically. See [what comes back](#restore-original-settings).
 
 🐧 **Windows and Linux**  
 The same features on both. Linux uses a small kernel driver that comes with OpenSenses.
@@ -52,7 +52,7 @@ The same features on both. Linux uses a small kernel driver that comes with Open
 # **Instructions**
 
 1. **Install:** Download OpenSenses for your system from [Download](#download) and install it. It asks for administrator rights once to set up its background service.
-2. **Lighting:** Pick an effect, click a zone on the keyboard picture and drag the colour picker, or paste a hex colour.
+2. **Lighting:** Pick an effect, click a zone (or keys, on per-key keyboards) on the keyboard picture and drag the colour picker, or paste a hex colour.
 3. **Fans & GPU:** Choose a fan mode and a GPU level. Anything you don't touch stays the way the laptop already has it.
 4. **Games:** Open **Games**, click a running game (or **Browse…** to its program file) and choose what changes while you play.
 5. **Done!** You can close the app; the background service keeps everything applied.
@@ -60,18 +60,27 @@ The same features on both. Linux uses a small kernel driver that comes with Open
 &nbsp;
 
 > [!TIP]
-> **Something not right?** Open **Settings → Restore original settings** to put the laptop back the way it was before OpenSenses. OpenSenses then leaves the laptop alone until you change something again.
->
-> A few things can't be read from the laptop beforehand, so Restore can't bring them back:
-> * **Keyboard lighting effect:** the zone colours come back, but the effect (Wave, Breathing and so on) stays the way you last set it in OpenSenses.
-> * **CPU level:** set back to Normal, the laptop's start-up setting, since the laptop can't report what it was. Turbo is turned off.
-> * **Helios 700 and Triton 900:** the per-key colours and effects, the heat pipe, fan and touchpad lights, and "lighting off when idle" stay the way you last set them.
-> * **Sticky Keys:** it's a setting of your Windows account (or Linux desktop), so turn it back off there if you changed it.
->
-> Your OpenSenses settings, game profiles and key assignments are kept; they only exist in OpenSenses and don't change the laptop.
+> **Got a Turbo key?** Press it on the charger for the highest GPU level with the fans on Max, and again to go back. You can choose what it does in **Settings → Turbo key**.
 
 > [!NOTE]
 > Close or uninstall PredatorSense first if it's still installed, so the two don't fight over the same settings.
+
+&nbsp;
+
+# **Restore Original Settings**
+
+Before it changes anything, OpenSenses saves your laptop's own settings. If something isn't right, open **Settings → Restore original settings** to put them back. OpenSenses then leaves the laptop alone until you change something again. Uninstalling OpenSenses does this automatically.
+
+Lighting colours, fan modes and speeds, the GPU level and clocks, the fan curve, the Turbo LED and the on/off settings all come back. A few things can't be read from the laptop beforehand, so they can't:
+
+| What | After Restore |
+| ---- | ------------- |
+| Keyboard lighting effect (Wave, Breathing…) | The zone colours come back; the effect stays as you last set it |
+| CPU level | Back to Normal, the laptop's start-up setting |
+| Helios 700 / Triton 900 per-key lighting, heat pipe, fan and touchpad lights, idle lighting | Stay as you last set them |
+| Sticky Keys | A setting of your Windows account or Linux desktop; turn it off there if you changed it |
+
+Your OpenSenses settings, game profiles and key assignments are kept, since they only live in OpenSenses.
 
 &nbsp;
 
@@ -102,19 +111,26 @@ On image-based systems like **Bazzite**, **Fedora Silverblue** or **SteamOS**, d
 <a href="assets/screenshots/lighting.png">
   <img src="assets/screenshots/lighting.png" alt="Keyboard lighting" width="400">
 </a>
+<a href="assets/screenshots/per-key.png">
+  <img src="assets/screenshots/per-key.png" alt="Per-key lighting (Helios 700)" width="400">
+</a>
+
 <a href="assets/screenshots/fans.png">
   <img src="assets/screenshots/fans.png" alt="Fan control" width="400">
 </a>
-
 <a href="assets/screenshots/gpu.png">
-  <img src="assets/screenshots/gpu.png" alt="GPU overclock levels" width="400">
+  <img src="assets/screenshots/gpu.png" alt="GPU overclock levels and Turbo" width="400">
 </a>
+
 <a href="assets/screenshots/monitor.png">
   <img src="assets/screenshots/monitor.png" alt="Temperatures and fan speeds" width="400">
 </a>
-
 <a href="assets/screenshots/games.png">
   <img src="assets/screenshots/games.png" alt="GameSync" width="400">
+</a>
+
+<a href="assets/screenshots/keys.png">
+  <img src="assets/screenshots/keys.png" alt="Programmable keys" width="400">
 </a>
 <a href="assets/screenshots/settings.png">
   <img src="assets/screenshots/settings.png" alt="Settings" width="400">
