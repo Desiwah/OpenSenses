@@ -61,6 +61,14 @@ The same features on both. Linux uses a small kernel driver that comes with Open
 
 > [!TIP]
 > **Something not right?** Open **Settings → Restore original settings** to put the laptop back the way it was before OpenSenses. OpenSenses then leaves the laptop alone until you change something again.
+>
+> A few things can't be read from the laptop beforehand, so Restore can't bring them back:
+> * **Keyboard lighting effect:** the zone colours come back, but the effect (Wave, Breathing and so on) stays the way you last set it in OpenSenses.
+> * **CPU level:** set back to Normal, the laptop's start-up setting, since the laptop can't report what it was. Turbo is turned off.
+> * **Helios 700 and Triton 900:** the per-key colours and effects, the heat pipe, fan and touchpad lights, and "lighting off when idle" stay the way you last set them.
+> * **Sticky Keys:** it's a setting of your Windows account (or Linux desktop), so turn it back off there if you changed it.
+>
+> Your OpenSenses settings, game profiles and key assignments are kept; they only exist in OpenSenses and don't change the laptop.
 
 > [!NOTE]
 > Close or uninstall PredatorSense first if it's still installed, so the two don't fight over the same settings.
