@@ -1,7 +1,7 @@
 //! Encoding of the values sent to the firmware's `AcerGamingFunction` WMI
 //! methods. See docs/protocol.md for how each layout was worked out.
 
-use crate::settings::{Direction, Effect, FanMode, GpuMode, Rgb};
+use crate::settings::{Direction, Effect, Fan, FanMode, Rgb};
 
 /// Zone bit for the 4-zone keyboard (zone 1 = left .. zone 4 = right).
 pub fn zone_mask(zone: u8) -> u32 {
@@ -77,8 +77,24 @@ pub fn kb_backlight(effect: Effect, speed: u8, brightness: u8, direction: Direct
     p
 }
 
-pub const FAN_CPU: u64 = 0x1;
-pub const FAN_GPU: u64 = 0x8;
+/// Fan bit in `SetGamingFanBehavior`'s low 16 bits.
+pub fn fan_mask(fan: Fan) -> u64 {
+    match fan {
+        Fan::Cpu => 0x1,
+        Fan::Gpu => 0x8,
+        Fan::Gpu2 => 0x10,
+    }
+}
+
+/// Bit where a fan's 2-bit mode sits in `SetGamingFanBehavior`'s input;
+/// `GetGamingFanBehavior` reports it 8 bits lower.
+fn fan_mode_shift(fan: Fan) -> u32 {
+    match fan {
+        Fan::Cpu => 16,
+        Fan::Gpu => 22,
+        Fan::Gpu2 => 24,
+    }
+}
 
 fn fan_mode_value(m: FanMode) -> u64 {
     match m {
@@ -89,26 +105,36 @@ fn fan_mode_value(m: FanMode) -> u64 {
 }
 
 /// `SetGamingFanBehavior` input for one fan.
-pub fn fan_behavior(fan: u64, m: FanMode) -> u64 {
-    let shift = if fan == FAN_CPU { 16 } else { 22 };
-    fan | fan_mode_value(m) << shift
+pub fn fan_behavior(fan: Fan, m: FanMode) -> u64 {
+    fan_mask(fan) | fan_mode_value(m) << fan_mode_shift(fan)
 }
 
-/// `SetGamingFanSpeed` input: fan id (CPU 1, GPU 4) and percentage.
-pub fn fan_speed(fan: u64, percent: u8) -> u64 {
-    let id = if fan == FAN_CPU { 1 } else { 4 };
+/// `SetGamingFanSpeed` input: fan id (CPU 1, GPU 4, second GPU 5) and percentage.
+pub fn fan_speed(fan: Fan, percent: u8) -> u64 {
+    let id = match fan {
+        Fan::Cpu => 1,
+        Fan::Gpu => 4,
+        Fan::Gpu2 => 5,
+    };
     id | (percent.min(100) as u64) << 8
 }
 
-/// Decodes `GetGamingFanBehavior(0x9)`: (cpu, gpu) mode.
-pub fn decode_fan_behavior(out: u64) -> (Option<FanMode>, Option<FanMode>) {
-    let m = |v: u64| match v {
+/// Query for `GetGamingFanBehavior` covering these fans.
+pub fn fan_query(fans: &[Fan]) -> u32 {
+    fans.iter().map(|f| fan_mask(*f)).fold(0, |a, b| a | b) as u32
+}
+
+/// Decodes one fan's mode from `GetGamingFanBehavior`.
+pub fn decode_fan_behavior(out: u64, fan: Fan) -> Option<FanMode> {
+    if out & 0xFF != 0 {
+        return None;
+    }
+    match (out >> (fan_mode_shift(fan) - 8)) & 3 {
         1 => Some(FanMode::Auto),
         2 => Some(FanMode::Max),
         3 => Some(FanMode::Custom),
         _ => None,
-    };
-    (m((out >> 8) & 3), m((out >> 14) & 3))
+    }
 }
 
 /// Sensor ids for `GetGamingSysInfo`.
@@ -129,36 +155,35 @@ pub fn decode_sensor(out: u64) -> Option<u32> {
     Some(((out >> 8) & 0xFFFF) as u32)
 }
 
-/// Clock offsets (MHz) PredatorSense uses for the PH317-53's RTX 20-series
-/// GPUs (its PredatorSense.ini): (core, memory) for Normal / Faster / Turbo.
-pub fn gpu_offsets(mode: GpuMode) -> (i32, i32) {
-    match mode {
-        GpuMode::Normal => (0, 0),
-        GpuMode::Faster => (100, 160),
-        GpuMode::Turbo => (160, 320),
-    }
-}
-
-/// Misc setting 5 tells the firmware which GPU level is active.
+/// Misc setting 5 tells the firmware which GPU level is active; the value
+/// is the level's index in the model's list (0 = Normal).
 pub const MISC_GPU_OC: u64 = 0x05;
 
-pub fn gpu_oc(mode: GpuMode) -> u64 {
-    let v: u64 = match mode {
-        GpuMode::Normal => 0,
-        GpuMode::Faster => 1,
-        GpuMode::Turbo => 2,
-    };
-    MISC_GPU_OC | v << 8
+pub fn gpu_oc(level_index: usize) -> u64 {
+    MISC_GPU_OC | (level_index as u64 & 0xFF) << 8
 }
 
-pub fn decode_gpu_oc(out: u64) -> Option<GpuMode> {
+pub fn decode_gpu_oc(out: u64) -> Option<usize> {
+    if out & 0xFF != 0 {
+        return None;
+    }
+    Some(((out >> 8) & 0xFF) as usize)
+}
+
+/// Misc setting 2: graphics mode, 1 = hybrid, 2 = discrete GPU only.
+pub const MISC_GPU_MODE: u64 = 0x02;
+
+pub fn discrete_gpu(on: bool) -> u64 {
+    MISC_GPU_MODE | if on { 2 << 8 } else { 1 << 8 }
+}
+
+pub fn decode_discrete_gpu(out: u64) -> Option<bool> {
     if out & 0xFF != 0 {
         return None;
     }
     match (out >> 8) & 0xFF {
-        0 => Some(GpuMode::Normal),
-        1 => Some(GpuMode::Faster),
-        2 => Some(GpuMode::Turbo),
+        1 => Some(false),
+        2 => Some(true),
         _ => None,
     }
 }
@@ -199,25 +224,25 @@ pub fn decode_misc_flag(out: u64) -> Option<bool> {
     }
 }
 
-/// `APGeAction.SetFunction` input for the 30-second keyboard backlight
-/// timeout, in PredatorSense's format: 0x84 is the backlight hotkey number
-/// on these models, byte 4 the backlight brightness (100%), byte 5 the
-/// timeout in seconds (0 = never). Sending brightness 0 instead (as some
-/// Linux tools do) left the PH317-53 reporting a different state.
-pub fn backlight_timeout(on: bool) -> u64 {
-    0x64_0008_8402 | if on { 30u64 << 40 } else { 0 }
-}
-
+/// Keyboard backlight timeout through `APGeAction` (0x84 is the backlight
+/// hotkey number on these models). Read with `GetFunction(0x88401)`: byte 5
+/// is the timeout in seconds (30 = on, 0 = off) and byte 4 a value the
+/// firmware wants echoed back. A `SetFunction` is only accepted when byte 4
+/// matches what was just read, and an accepted call flips the setting, so
+/// it must only be sent when the state actually needs to change. This is
+/// how PredatorSense does it; tested on a PH317-53.
 pub const BACKLIGHT_TIMEOUT_GET: u32 = 0x88401;
 
-/// Only the two shapes the firmware is known to report are trusted;
-/// anything else is treated as "unknown" so it never triggers a re-apply.
 pub fn decode_backlight_timeout(out: u64) -> Option<bool> {
-    match out {
-        0x1E00_0008_0000 => Some(true),
-        0x8_0000 => Some(false),
-        _ => None,
+    if out & 0xFF != 0 {
+        return None;
     }
+    Some((out >> 40) & 0xFF != 0)
+}
+
+/// `SetFunction` input to switch the timeout, given the current reading.
+pub fn backlight_timeout(current: u64, on: bool) -> u64 {
+    0x88402 | (current & 0xFF_0000_0000) | if on { 30u64 << 40 } else { 0 }
 }
 
 /// `SetGamingLED` values for the turbo LED.
@@ -241,18 +266,25 @@ mod tests {
         // CPU temperature 72 C, CPU fan 3000 rpm
         assert_eq!(decode_sensor(0x4800), Some(72));
         assert_eq!(decode_sensor(0xBB800), Some(3000));
-        assert_eq!(decode_fan_behavior(0x4100), (Some(FanMode::Auto), Some(FanMode::Auto)));
-        assert_eq!(decode_gpu_oc(0x0), Some(GpuMode::Normal));
+        assert_eq!(decode_fan_behavior(0x4100, Fan::Cpu), Some(FanMode::Auto));
+        assert_eq!(decode_fan_behavior(0x4100, Fan::Gpu), Some(FanMode::Auto));
+        assert_eq!(decode_fan_behavior(0xC300, Fan::Gpu), Some(FanMode::Custom));
+        assert_eq!(decode_gpu_oc(0x0), Some(0));
     }
 
     #[test]
     fn fan_values_match_predatorsense() {
         // PredatorSense sends 0x410009 for Auto and 0x820009 for Max (both fans at once)
-        assert_eq!(fan_behavior(FAN_CPU, FanMode::Auto) | fan_behavior(FAN_GPU, FanMode::Auto), 0x410009);
-        assert_eq!(fan_behavior(FAN_CPU, FanMode::Max) | fan_behavior(FAN_GPU, FanMode::Max), 0x820009);
-        assert_eq!(fan_behavior(FAN_CPU, FanMode::Custom), 0x30001);
-        assert_eq!(fan_behavior(FAN_GPU, FanMode::Custom), 0xC00008);
-        assert_eq!(fan_speed(FAN_GPU, 60), 4 | 60 << 8);
+        assert_eq!(fan_behavior(Fan::Cpu, FanMode::Auto) | fan_behavior(Fan::Gpu, FanMode::Auto), 0x410009);
+        assert_eq!(fan_behavior(Fan::Cpu, FanMode::Max) | fan_behavior(Fan::Gpu, FanMode::Max), 0x820009);
+        assert_eq!(fan_behavior(Fan::Cpu, FanMode::Custom), 0x30001);
+        assert_eq!(fan_behavior(Fan::Gpu, FanMode::Custom), 0xC00008);
+        assert_eq!(fan_speed(Fan::Gpu, 60), 4 | 60 << 8);
+        // second GPU fan, as PredatorSense sends it for the Triton 500
+        assert_eq!(fan_behavior(Fan::Gpu2, FanMode::Custom), 0x3000010);
+        assert_eq!(fan_behavior(Fan::Gpu2, FanMode::Auto), 0x1000010);
+        assert_eq!(fan_speed(Fan::Gpu2, 40), 5 | 40 << 8);
+        assert_eq!(fan_query(&[Fan::Cpu, Fan::Gpu]), 0x9);
     }
 
     #[test]
@@ -273,17 +305,23 @@ mod tests {
         assert_eq!(decode_profile(0x1000001000000), Some((true, true)));
         assert_eq!(lcd_overdrive(true), 0x1000000000010);
         assert_eq!(win_key(true), 0x1000002);
-        assert_eq!(backlight_timeout(true), 0x1E6400088402);
-        assert_eq!(backlight_timeout(false), 0x6400088402);
+        // readings and the commands that switched them on the laptop
         assert_eq!(decode_backlight_timeout(0x1E0000080000), Some(true));
-        assert_eq!(decode_backlight_timeout(0x6400000000), None);
+        assert_eq!(decode_backlight_timeout(0x6400000000), Some(false));
+        assert_eq!(backlight_timeout(0x6400000000, true), 0x1E6400088402);
+        assert_eq!(backlight_timeout(0x1E0000080000, false), 0x88402);
         assert_eq!(boot_animation(true), 0x106);
         assert_eq!(decode_misc_flag(0x0), Some(false));
     }
 
     #[test]
-    fn gpu_turbo_matches_linux_driver() {
-        assert_eq!(gpu_oc(GpuMode::Turbo), 0x205);
-        assert_eq!(gpu_oc(GpuMode::Normal), 0x005);
+    fn gpu_levels_match_predatorsense() {
+        // Helios 300 Turbo is level 2 (also what the Linux driver sends)
+        assert_eq!(gpu_oc(2), 0x205);
+        assert_eq!(gpu_oc(0), 0x005);
+        // Helios 700 has a fourth level
+        assert_eq!(gpu_oc(3), 0x305);
+        assert_eq!(discrete_gpu(true), 0x202);
+        assert_eq!(decode_discrete_gpu(0x100), Some(false));
     }
 }
