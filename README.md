@@ -86,9 +86,9 @@ Your OpenSenses settings, game profiles and key assignments are kept, since they
 
 # **Download**
 
-[![Download for Windows](https://img.shields.io/badge/Download_for-Windows-0078D4?style=for-the-badge&logo=windows&logoColor=white)](https://github.com/Desiwah/OpenSenses/releases/latest)
+[![Download for Windows](https://img.shields.io/badge/Download_for-Windows-0078D4?style=for-the-badge)](https://github.com/Desiwah/OpenSenses/releases/latest)
 
-[![Download for Linux](https://img.shields.io/badge/Download_for-Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black)](https://github.com/Desiwah/OpenSenses/releases/latest)
+[![Download for Linux](https://img.shields.io/badge/Download_for-Linux-FCC624?style=for-the-badge)](https://github.com/Desiwah/OpenSenses/releases/latest)
 
 **Linux packages:**
 
